@@ -1,5 +1,13 @@
 # 2026-09-11 继续修复目标模式执行中
 
+## 2026-09-14 用户实卡反馈：RTX 3060 XeSS-FG 2X 可用
+
+用户确认在 RTX 3060 实机上，Veyra 选择 `Intel XeSS · 实验显示补帧 2X` 后可以正常使用帧生成。该结论指向 XeSS-FG 预览路径，不等同于 NVIDIA 官方 DLSS Frame Generation 对 RTX 30 的支持，也不证明社区 `dlssg_for_sm86` 已接入或必要。
+
+本条证据来源为用户本轮实机反馈；本轮未由 Agent 重新执行 GPU 日志、外部捕获或长时稳定性测试，因此只记录为“用户确认可用”。当前仍限于实时预览 2X；视频导出、3X/4X、长期画质/鬼影、采集/OBS 捕获和端到端显示帧率未由本条验收。未修改代码、SDK 或 XeSS 运行文件。
+
+下一步唯一任务：如需扩大支持声明，再收集 RTX 3060 的运行日志和长时/画质对照；在此之前不新增 RTX 30 特判或替换 XeSS 运行时。
+
 ## 最新交付：0.0.3 已发布
 
 GitHub发布完成：https://github.com/Likely7/Veyra-NRVideo/releases/tag/v0.0.3 。源码提交`83f6353803861307b7003213dc510a837b6f3966`与v0.0.3标签已推送，公开时间`2026-09-11T05:09:04Z`，非草稿且标为latest。四个附件大小和远端SHA256逐项匹配，README远端blob与提交一致；0.0.2资产/标签未修改。以下候选阶段记录由本条发布结果闭环，随后仅提交发布记录。
@@ -2021,3 +2029,11 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 验证结果：新 `veyra_media_probe.exe` 的 AV1 MP4 软件解码30帧 PASS（日志明确 `codec=libdav1d`）；ProRes MOV 软件解码30帧 PASS；同一新运行目录的 H.264 D3D12VA/共享设备/NR 12帧 PASS（NGX Create/Evaluate/Release 为 `0x1`、SEH0）；H.264 `veyra_source_tests` 23/23，软件媒体探针30帧 PASS；`veyra_quality_probe` 对 AV1 30帧、无增强图完整处理，`failures=0`；独立便携包只关闭增强的完整播放器 smoke 运行3秒，`smoke frames=60 generated=0 failed=false`，自动从 AV1 D3D12VA 回退到 `libdav1d` 并保存/显示正常。实际合法的 AV1-MOV 样本无法由当前 FFmpeg MOV muxer生成（其明确拒绝 AV1 写入 MOV），因此没有把“AV1 MOV”写成已验证格式；MOV 按容器内实际 codec 分开判断。
 
 本地 `package-portable.ps1` 已成功生成带 `dav1d.dll`、DAV1D 版权/SPDX 和 FFMPEG provenance 的1.2.0测试包。`portable-smoke.ps1` 的基础、社区NR、DLSS NR/FG场景产生了有效输出；最后的既有 VideoSR 断言因当前驱动未加载脚本要求的 `_nvngx.dll` 失败，日志保留在 `out/media-codec-dav1d-portable-smoke/video-sr-nr-fg.stdout.log`，不归因于AV1/MOV。新 FFmpeg 仍未替换1.2.0 GitHub Release，未制作/上传包含 dav1d 对应源码/port 的正式对应源码包；用户原始文件、长时播放、10/12-bit、4:2:2/4:4:4 和其他显卡尚未验收，不能宣称所有格式和设备均已支持。
+
+## 2026-09-14 用户 MOV 黑屏：负 AAC 起始 PTS 修复（本地）
+
+用户提供 `C:/Users/123/Videos/2026-08-11 21-29-44.mov`，反馈打开黑屏。文件 SHA256 为 `4D826CE4487F19A43375DC2BD8C4A0221926B5A9C29CD224E55FA9B6BFFEAC0A`，容器为 QuickTime/MOV，视频 H.264 High 2940x1912 60fps yuv420p，音频 AAC-LC 2ch 48kHz。视频-only 无损去音轨副本可以正常呈现，原文件软件解码和 D3D12VA 探针也分别 PASS，故排除 MOV/H.264 解码、硬解纹理导入和颜色初始化；原文件全播放器复现的黑屏只在带 AAC 音轨路径出现。
+
+根因是 `AudioPipeline::runOnAudioThread` 将 `headPtsMs()` 的所有负值都当成“没有可用音频”，而该 MOV 的 AAC 编码首帧合法起始 PTS 为 `-1.3ms`（编码器 priming）。音频 endpoint 因此只打开未锚定，音频主时钟没有启动，文件调度一直没有进入首帧呈现。`src/sink/WasapiAudioSink.cpp` 现在以实际预填充时长区分“空队列”与合法负 PTS，仅在 `prefetchedMs>0` 且 PTS 有限时锚定 renderer；`clockExhausted` 同步按预填充是否为空判断。未改变音频时间线、补偿、重采样或无音频文件路径。
+
+修复后重建 `out/media-codec-dav1d`（`scripts/build.ps1 ... -FfmpegRoot C:/veyra-deps/ffmpeg-ps5-dav1d-installed`，44/44 增量步骤成功，最终 build exit 0）。原始 MOV 全播放器无增强 10 秒测试 exit 0，`renderer ANCHORED ptsMs=-1.3` 后释放保持，`smoke frames=542 generated=0 failed=false`，`realPresented=540`、`presentSubmitFps=60.00`；证据 `out/mov-audio-fix.stdout.log`，FFmpeg 的 `UDTA parsing failed retrying raw` 仍为可恢复元数据警告，AAC 仍有 skipped-samples 时间戳警告但不再阻止播放。软件 H.264 30帧媒体探针、D3D12VA/共享设备 12帧探针、NGX NR Create/Evaluate/Release（0x1、SEH0）、`veyra_source_tests` 及 `veyra_audio_timeline_tests`（完整实时/WASAPI/恢复/欠速用例）均 exit 0。未改 GitHub Release、未替换正式包、未执行用户肉眼画质验收。

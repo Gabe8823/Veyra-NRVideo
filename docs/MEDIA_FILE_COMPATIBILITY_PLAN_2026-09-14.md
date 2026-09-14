@@ -78,3 +78,9 @@ UI 在打开失败时显示上述原因；日志完整记录 FFmpeg codec id/nam
 5. 每次解码路径切换、seek、首帧色彩改变都原子 reset 图历史。硬解首次帧不符合 NV12/P010 时回退软件，不允许半会话继续。
 
 当前代码已完成首帧颜色/位深探测、普通文件 Auto 硬解到软件回退、硬件纹理导入契约和具体解码日志；实际新 FFmpeg 的 AV1/ProRes 探针证据见 `docs/WORKLOG.md`。若用户样本是 Dolby Vision、ProRes RAW 或受 DRM 保护，则仍明确拒绝并说明原因，不做不可靠的兼容层。新 FFmpeg 尚未成为正式发布资产，不能把本地验证写成 1.2.0 已支持。
+
+## 用户 MOV 黑屏补充验证（2026-09-14）
+
+用户样本 `C:/Users/123/Videos/2026-08-11 21-29-44.mov` 已实际跑通。该文件是 H.264 + AAC 的 QuickTime MOV；视频-only 副本和软件/D3D12VA 探针均通过，黑屏只在带 AAC 的播放器启动路径复现。原因不是容器或视频 codec，而是 AAC 编码器 priming 造成的合法负首帧 PTS（约 `-1.3ms`）被音频启动逻辑误判为空队列，导致 renderer 未锚定、音频主时钟未释放，文件调度停在首帧前。
+
+`WasapiAudioSink.cpp` 已改为用实际音频预填充时长区分空队列与负 PTS，并在 PTS 有限时照常锚定。原始文件无增强 10 秒播放器回归：`smoke frames=542`、`realPresented=540`、`failed=false`、约60fps；软件解码30帧、D3D12VA12帧和音频时间线完整测试均通过。完整证据和局限写入 `docs/WORKLOG.md`；尚未替换正式 Release 资产。

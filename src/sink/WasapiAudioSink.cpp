@@ -599,9 +599,15 @@ void AudioPipeline::runOnAudioThread(AudioRenderer* renderer, bool ownEndpoint)
         }
     }
     const double firstPts = headPtsMs();
-    clockExhausted_=decodedEof_&&firstPts<0;
+    const double prefetchedMs = bufferedMs();
+    clockExhausted_=decodedEof_&&prefetchedMs<=0.0;
     bool pauseApplied = shouldPause();
-    if (endpointReady && firstPts >= 0.0) {
+    // A/V containers commonly give the first AAC frame a small negative PTS
+    // for encoder priming (this MOV starts at about -1.3 ms).  Negative does
+    // not mean "no audio"; headPtsMs() also uses -1 as its empty sentinel.
+    // Use the actual prefetched sample count to distinguish those cases and
+    // anchor the renderer whenever a finite audio timeline is available.
+    if (endpointReady && prefetchedMs > 0.0 && std::isfinite(firstPts)) {
         if (!renderer->startAnchored(*this,pauseApplied)) recovering(renderer->lastError());
         else endpointRecovering_=false;
     }
