@@ -13,9 +13,10 @@ extern "C" {
 }
 int wmain(int argc,wchar_t** argv){
     if(argc==2&&wcscmp(argv[1],L"--list")==0){
-        CoInitializeEx(nullptr,COINIT_MULTITHREADED);auto devices=veyra::source::CaptureCardSource::devices();
-        for(unsigned d=0;d<devices.size();++d){wprintf(L"DEVICE %u %ls\n",d,devices[d].c_str());for(const auto& f:veyra::source::CaptureCardSource::formats(d))wprintf(L"FORMAT %u:%d %ls\n",d,f.index,f.label.c_str());}
-        CoUninitialize();return devices.empty()?1:0;
+        CoInitializeEx(nullptr,COINIT_MULTITHREADED);auto videos=veyra::source::CaptureCardSource::deviceDetails();auto audios=veyra::source::CaptureCardSource::deviceDetails(true);
+        for(unsigned d=0;d<videos.size();++d){wprintf(L"VIDEO %u %ls embeddedAudio=%d path=%ls\n",d,videos[d].name.c_str(),videos[d].hasEmbeddedAudio?1:0,videos[d].path.c_str());const auto formats=videos[d].path.empty()?veyra::source::CaptureCardSource::formats(d):veyra::source::CaptureCardSource::formatsByPath(videos[d].path);for(const auto& f:formats)wprintf(L"FORMAT %u:%d %ls\n",d,f.index,f.label.c_str());}
+        for(unsigned a=0;a<audios.size();++a)wprintf(L"AUDIO %u %ls path=%ls\n",a,audios[a].name.c_str(),audios[a].path.c_str());
+        CoUninitialize();return videos.empty()?1:0;
     }
     if(argc!=2){printf("Specify capture:device:format:audio; real hardware required\n");return 2;}
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);

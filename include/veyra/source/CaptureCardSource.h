@@ -1,10 +1,22 @@
 #pragma once
 #include "veyra/source/IFrameSource.h"
 #include <memory>
+#include <string_view>
 #include <vector>
 #include "veyra/sink/CaptureAudioSession.h"
 namespace veyra::source {
 struct CaptureFormat {int index=0;unsigned width=0,height=0;double fps=0;std::wstring label;};
+struct CaptureDevice {
+    std::wstring name;
+    // DirectShow moniker DevicePath/display name. This is stable across a
+    // fresh enumeration, unlike the ordinal exposed by ICreateDevEnum.
+    std::wstring path;
+    // Only populated for video devices: the selected video filter exposes an
+    // audio output pin that can be used without a second audio filter.
+    bool hasEmbeddedAudio=false;
+};
+constexpr int kCaptureAudioDisabled=-1;
+constexpr int kCaptureAudioFromVideoDevice=-2;
 struct CaptureMetrics {
     uint64_t received=0, delivered=0, dropped=0;
     double callbackFps=0, readAgeMs=0, frameAgeMs=0;
@@ -12,8 +24,12 @@ struct CaptureMetrics {
 class CaptureCardSource final:public IFrameSource {
 public:
     CaptureCardSource();~CaptureCardSource()override;
+    static std::vector<CaptureDevice> deviceDetails(bool audio=false);
     static std::vector<std::wstring> devices(bool audio=false);
+    static std::wstring makeCapturePath(unsigned videoIndex,const CaptureDevice& video,
+        int format,int audioMode,const CaptureDevice* audio,unsigned colorOverride=0);
     static std::vector<CaptureFormat> formats(unsigned device);
+    static std::vector<CaptureFormat> formatsByPath(std::wstring_view devicePath);
     bool open(const SourceOpenDesc&)override;
     // Negotiate/allocate before GPU initialization, but do not queue frames
     // or start audio until the presenter and enhancement graph are ready.

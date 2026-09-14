@@ -1,5 +1,11 @@
 # 2026-09-11 继续修复目标模式执行中
 
+## 2026-09-14 采集卡音频设备选择修复
+
+用户反馈“采集卡对应音频在 Veyra 中选不到、OBS 可以选择”。静态排查确认原实现只枚举全局独立 DirectShow 音频 filter，未使用选中视频 filter 的内置音频 pin，也用易变整数序号重新绑定设备。本轮已修复内置音频路径、独立音频 DevicePath 绑定、`capture2:` 连接串和音频 pin/media type 诊断；旧 `capture:` 路径兼容。详细范围、命令、结果和未测边界见 [采集卡音频设备选择修复](CAPTURE_AUDIO_DEVICE_SELECTION_REPAIR_2026-09-14.md)。
+
+最终 `x64-release` 构建 exit 0；`veyra_capture_tests --list`、普通/5.1 音频 jitter、UI contract、capture color 均通过。本机只枚举到独立 `USB3 Digital Audio`，没有反馈者实卡，未宣称实卡验收；未 push/发布。
+
 ## 2026-09-14 用户实卡反馈：RTX 3060 XeSS-FG 2X 可用
 
 用户确认在 RTX 3060 实机上，Veyra 选择 `Intel XeSS · 实验显示补帧 2X` 后可以正常使用帧生成。该结论指向 XeSS-FG 预览路径，不等同于 NVIDIA 官方 DLSS Frame Generation 对 RTX 30 的支持，也不证明社区 `dlssg_for_sm86` 已接入或必要。

@@ -33,7 +33,7 @@ ExportJobManager::~ExportJobManager(){cancel();if(p_->process)WaitForSingleObjec
 bool ExportJobManager::start(const std::wstring& input,const std::wstring& output,EnhancementSettings settings,bool hevc,unsigned maxFrames){
     if(poll().active())return false;p_->clear();p_->snapshot={};
     auto fail=[&](const wchar_t* message){const DWORD error=GetLastError();p_->clear();p_->snapshot.state=ExportState::Failed;p_->snapshot.message=message;log::error("export-worker",std::format("launch failed error={}",error));return false;};
-    if(input.empty()||output.empty()||input.size()>=32768||output.size()>=32768||!settings.validate().empty()||input.rfind(L"capture:",0)==0)return fail(L"请选择本地视频与有效导出设置");
+    if(input.empty()||output.empty()||input.size()>=32768||output.size()>=32768||!settings.validate().empty()||input.starts_with(L"capture:")||input.starts_with(L"capture2:"))return fail(L"请选择本地视频与有效导出设置");
     if(std::filesystem::exists(output)||std::filesystem::exists(output+L".partial"))return fail(L"输出或partial文件已存在，请选择新文件名");
     SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE};
     p_->mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,&sa,PAGE_READWRITE,0,sizeof(Shared),nullptr);

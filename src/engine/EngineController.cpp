@@ -118,7 +118,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
     gfx::D3D12DeviceContext ctx;gfx::CommandSlotRing ring;source::MediaFileSource source;
     sink::AudioPipeline audioPipe;sink::AudioRenderer audio;VideoPresenter presenter;
     pipeline::EnhanceGraph graph(ctx,ring);AVFrame* imageFrame=nullptr;AVFrame* cachedFrame=nullptr;pipeline::FramePacket cachedPacket;
-    source::CaptureCardSource captureSource;const bool physicalCapture=path.rfind(L"capture:",0)==0;
+    source::CaptureCardSource captureSource;const bool physicalCapture=path.starts_with(L"capture:")||path.starts_with(L"capture2:");
 #ifdef VEYRA_ENABLE_REMOTEPLAY
     auto remote=remoteRequest?std::make_shared<source::RemotePlaySessionSource>():nullptr;
     const bool isRemote=bool(remote);
