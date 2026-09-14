@@ -1997,3 +1997,9 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 待执行：提交、推送 main 与 v1.2.0、上传草稿、核验 GitHub 服务端六资产尺寸/digest 后公开 latest。真实 HDR 屏/采集卡、5.1 扬声器、PS5新会话、RTX30/40 实卡仍不因本次发布被伪装为已验收。
 
 1.2.0 发布完成：main 的发布提交 62be2ef187352bfefe8c264cdef24d3a89c1beff 与带注释标签 v1.2.0（ab1bf0ce1644cfe895ba8fd32fc7de7f1d520834）已推送。Release ID 388272314 于 2026-09-14T09:22:30Z 公开为 Latest，非草稿、非预发布：<https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.2.0>。六个资产服务端大小和 SHA-256 逐项匹配最终本地包：便携包 421736651 字节，SHA256 0A0D65DA75BE45F79587C1CBABE33062AFB32D2007F59E9270DFDDDA0973687E；对应 RemotePlay 与 patched FFmpeg 源码包及三份 .sha256 同步公开。证据为 logs/release-1.2.0-upload/remote-assets-verified.json；未更改已核验的 ZIP 或移动发布标签。物理硬件验收边界保持上述记录。
+
+## 2026-09-14 — 媒体文件兼容性研究与计划
+
+用户反馈 AV1、MOV 等文件“不能支持”，授权先研究并给出方案。本轮只读取源代码、1.2.0 随包 patched FFmpeg 构建记录和本机 DLL ABI，不修改产品功能、不构建、不更换 FFmpeg、不发布。实际 `avcodec-63.dll` 查询确认 H.264/HEVC/AV1/VP9/ProRes/DNxHD/MPEG-2/MPEG-4/VC-1 均有软件解码器；FFmpeg 配置与源码确认 MOV/MP4、Matroska/WebM、AVI、MPEG-TS 解封装器存在。当前问题不是一个 AV1 allowlist：文件对话框已有 MOV/AVI/TS 与所有文件，而普通文件又硬编码关闭硬解、图创建前不能可靠得到首帧的位深/HDR信息、失败提示过于笼统。FFmpeg 配置禁用了 libdav1d，保留原生 AV1，不能凭“能解码”承诺性能。
+
+完整的可回退分阶段实施/验收计划见 docs/MEDIA_FILE_COMPATIBILITY_PLAN_2026-09-14.md。重点先做预检诊断和安全的 Auto 硬解→软件回退，再贯通首帧色彩契约与样本矩阵；dav1d/重建 patched FFmpeg 仅在真实性能基准证明必要后独立审计。未拿到用户问题文件或其日志，不能断言当前失败的具体 codec/profile/metadata 原因。
