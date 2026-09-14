@@ -1,5 +1,11 @@
 # 2026-09-11 继续修复目标模式执行中
 
+## 2026-09-14 采集卡内部 FG 时间线修复
+
+用户反馈 RTX 4070 Ti 开启内部 FG、NR/SR 关闭后很快显示过载。排查确认物理采集的源 PTS 与主机回调时钟存在 59.94/60Hz 长期漂移；旧代码只在会话开始锚定一次，导致补帧截止时间累积落后数百毫秒，软件准入连续拒绝 FG，并非已证实的 GPU OOM 或 NR/SR 负载。已在 `codex/capture-fg-clock-repair-20260914` 分支修复：物理采集/PS5/live replay 按每个 A/B 对重新锚定，保留对内 FG 节奏；新增 `timeline=capture-pair` 诊断，UI 将“过载”改为“补帧受限”。
+
+修复前 checkpoint 为 `d9a94eb`。完整构建 216/216、最终增量构建 20/20；合同测试 109/109、实时计时、呈现 worker、DLSS 2/3/4 准入及 live overload/source-gap 回归通过。详细命令、日志和未完成的 RTX 4070 Ti 实卡验收边界见 [采集卡内部 FG 时间线修复](CAPTURE_FG_CLOCK_REPAIR_2026-09-14.md)。未 push/发布。
+
 ## 2026-09-14 采集卡音频设备选择修复
 
 用户反馈“采集卡对应音频在 Veyra 中选不到、OBS 可以选择”。静态排查确认原实现只枚举全局独立 DirectShow 音频 filter，未使用选中视频 filter 的内置音频 pin，也用易变整数序号重新绑定设备。本轮已修复内置音频路径、独立音频 DevicePath 绑定、`capture2:` 连接串和音频 pin/media type 诊断；旧 `capture:` 路径兼容。详细范围、命令、结果和未测边界见 [采集卡音频设备选择修复](CAPTURE_AUDIO_DEVICE_SELECTION_REPAIR_2026-09-14.md)。

@@ -1,14 +1,18 @@
 #pragma once
 #include <cstdint>
 namespace veyra::engine {
-// Maps a continuous source epoch to one monotonic host timeline. Processing
-// completion must never re-anchor individual pairs. PS5 may explicitly reset
-// per newly decoded input pair (before enhancement) because its PTS is locally
-// estimated and decoder delivery jitter is not playback lateness. Units: 100 ns.
+// Maps source timestamps to a monotonic host timeline. File playback keeps a
+// continuous source anchor; live sources may explicitly re-anchor each input
+// pair before enhancement because their device/source clock is not guaranteed
+// to match the host clock. Processing completion must never re-anchor a pair.
+// Units: 100 ns.
 class PresentationScheduler {
 public:
     void reset(uint64_t epoch,int64_t source,int64_t host,int64_t lookahead,bool paceSourcePts=true) {
         epoch_=epoch;source_=source;host_=host;delay_=lookahead;anchored_=true;paced_=paceSourcePts;
+    }
+    void resetPair(uint64_t epoch,int64_t source,int64_t host,int64_t lookahead,bool paceSourcePts=true) {
+        reset(epoch,source,host,lookahead,paceSourcePts);
     }
     bool anchored(uint64_t epoch)const{return anchored_&&epoch==epoch_;}
     // Unbuffered capture is ready-driven. A late first callback or clock drift

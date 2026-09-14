@@ -127,6 +127,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
     (void)remoteRequest;const bool isRemote=false;
 #endif
     const bool isCapture=physicalCapture||options.captureReplayForTest||isRemote;
+    const bool pairAnchoredLive=physicalCapture||options.captureReplayForTest||isRemote;
     const bool useLiveFgAdmission=!(options.captureReplayForTest&&options.captureReplayDisableFgAdmissionForTest);
     source::IFrameSource* activeSource=physicalCapture?static_cast<source::IFrameSource*>(&captureSource):&source;
 #ifdef VEYRA_ENABLE_REMOTEPLAY
@@ -631,18 +632,20 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 if(isCapture&&!rereadCached&&useLiveFgAdmission&&options.settings.frameGenerationBackend!=FrameGenerationBackend::XeSS){
                     const auto presentP95=livePresent.p95();
                     admitFg=[&,presentP95](const pipeline::FrameBatch& batch){
-                        // PS5 decode/network delivery jitters independently of
-                        // its estimated PTS. Give each newly decoded pair its
-                        // one-input-interval budget, anchored BEFORE enhancement.
+                        // Physical capture and PS5 delivery clocks are not
+                        // guaranteed to match the host clock. Anchor each new
+                        // input pair before enhancement, so a 59.94-vs-60Hz
+                        // mismatch cannot accumulate into a stale deadline.
                         // Never extend it based on processing/ready completion.
-                        if(isRemote||!liveTimeline.anchored(batch.identity.epoch))liveTimeline.reset(batch.identity.epoch,batch.b100ns,liveInputReady,liveSourceInterval100ns(pkt.duration,activeSource->info().averageFps));
+                        if(pairAnchoredLive)liveTimeline.resetPair(batch.identity.epoch,batch.b100ns,liveInputReady,liveSourceInterval100ns(pkt.duration,activeSource->info().averageFps));
+                        else if(!liveTimeline.anchored(batch.identity.epoch))liveTimeline.reset(batch.identity.epoch,batch.b100ns,liveInputReady,liveSourceInterval100ns(pkt.duration,activeSource->info().averageFps));
                         const auto interval=liveSourceInterval100ns(pkt.duration,activeSource->info().averageFps);
                         const auto a=(historyReset||batch.b100ns<=batch.a100ns||batch.b100ns-batch.a100ns>10000000)?batch.b100ns-interval:batch.a100ns;
                         const auto lastGenerated=pipeline::FrameBatch::interpolate(a,batch.b100ns,options.fgMultiplier-1,options.fgMultiplier);
                         const auto now=host100ns(),deadline=liveTimeline.deadline(lastGenerated);
                         const double elapsed=elapsedMs(processStart);
                         const bool admitted=fgBudget.admit(now,deadline,elapsed,presentP95);
-                        if(now>=nextFgAdmissionLog){nextFgAdmissionLog=now+10000000;veyra::log::info("live-fg-admission",std::format("admitted={} remainingDeadlineMs={:.3f} predictedMs={:.3f} elapsedMs={:.3f} decodedAgeMs={:.3f} callbackAgeMs={:.3f} presentP95Ms={:.3f}",admitted,double(deadline-now)/10000,fgBudget.predicted(now).value_or(-1),elapsed,double(now-liveInputReady)/10000,double(now-captureArrival)/10000,presentP95));}
+                        if(now>=nextFgAdmissionLog){nextFgAdmissionLog=now+10000000;veyra::log::info("live-fg-admission",std::format("timeline={} admitted={} remainingDeadlineMs={:.3f} predictedMs={:.3f} elapsedMs={:.3f} decodedAgeMs={:.3f} callbackAgeMs={:.3f} presentP95Ms={:.3f}",pairAnchoredLive?(isRemote?"decoded-pair":"capture-pair"):"continuous",admitted,double(deadline-now)/10000,fgBudget.predicted(now).value_or(-1),elapsed,double(now-liveInputReady)/10000,double(now-captureArrival)/10000,presentP95));}
                         return admitted;
                     };
                 }
@@ -735,13 +738,15 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                     std::lock_guard lock(mutex_);snapshot_.captureHalfRate=halfRate;
                     veyra::log::info("capture-rate",std::format("revision={} requested60To30={} active={} transportFps={} originalPtsPreserved=true",options.settings.revision,options.settings.content==ContentRate::Capture60To30,halfRate,isCapture?activeSource->info().averageFps:0));
                 }
-                if(isCapture&&!rereadCached&&(isRemote||!liveTimeline.anchored(out.batch.identity.epoch))){
+                const bool pairPacing=pairAnchoredLive&&options.fg;
+                if(isCapture&&!rereadCached&&(isRemote||pairPacing||!liveTimeline.anchored(out.batch.identity.epoch))){
                     const auto duration100ns=liveSourceInterval100ns(pkt.duration,activeSource->info().averageFps);
                     // File replay has no device pacing and still needs its PTS
                     // clock. Physical capture without FG presents as soon as ready.
                     const bool paceSourcePts=options.fg||!physicalCapture;
-                    if(!liveTimeline.anchored(out.batch.identity.epoch))veyra::log::info("capture-timeline",std::format("interval100ns={} packetDurationKnown={} packetDurationPositive={} nominalFps={} FG={} pacing={}",duration100ns,!pkt.duration.isUnknown(),pkt.duration.num>0,activeSource->info().averageFps,options.fg,isRemote?"decoded-pair":paceSourcePts?"source-pts":"capture-ready"));
-                    liveTimeline.reset(out.batch.identity.epoch,out.batch.b100ns,liveInputReady,options.fg?duration100ns:0,paceSourcePts);
+                    if(!liveTimeline.anchored(out.batch.identity.epoch)||(pairPacing&&frames==0))veyra::log::info("capture-timeline",std::format("interval100ns={} packetDurationKnown={} packetDurationPositive={} nominalFps={} FG={} pacing={}",duration100ns,!pkt.duration.isUnknown(),pkt.duration.num>0,activeSource->info().averageFps,options.fg,pairAnchoredLive?(isRemote?"decoded-pair":"capture-pair"):paceSourcePts?"source-pts":"capture-ready"));
+                    if(pairPacing||isRemote)liveTimeline.resetPair(out.batch.identity.epoch,out.batch.b100ns,liveInputReady,options.fg?duration100ns:0,paceSourcePts);
+                    else if(!liveTimeline.anchored(out.batch.identity.epoch))liveTimeline.reset(out.batch.identity.epoch,out.batch.b100ns,liveInputReady,options.fg?duration100ns:0,paceSourcePts);
                 }
                 if(!isImage&&!isCapture&&frames==0){anchor=Clock::now();anchorMs=lastAudioClockMs=pts;}
                 double frameWaitMs=0,framePresentMs=0;

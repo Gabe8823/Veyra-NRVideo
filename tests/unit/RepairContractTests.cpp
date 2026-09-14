@@ -120,6 +120,25 @@ int main(){
     check(captureTimeline.deadline(6000600000LL)<=6001030000LL,"unbuffered capture cannot accumulate source-clock drift");
     captureTimeline.reset(2,0,2000000,166667,true);
     check(captureTimeline.deadline(166667)==2333334,"switch to FG restores continuous source-PTS pacing and lookahead");
+    // A physical capture device may report 59.94fps while its negotiated
+    // duration is treated as 60fps. A single source/host anchor accumulates
+    // roughly 300ms of error in five minutes; pair anchoring keeps the FG
+    // deadline within the current input pair instead.
+    constexpr int64_t nominal60=166667,actual5994=166834;
+    engine::PresentationScheduler continuousCapture;
+    continuousCapture.reset(7,0,0,nominal60,true);
+    constexpr int64_t samples=18000;
+    const int64_t lastSource=samples*nominal60,lastArrival=samples*actual5994;
+    const int64_t lastGenerated=lastSource-nominal60/2;
+    check(continuousCapture.deadline(lastGenerated)<lastArrival-2500000,"single capture source anchor exposes long-run 59.94/60 drift");
+    engine::PresentationScheduler pairCapture;bool pairDeadlineBounded=true;
+    for(int64_t i=1;i<=samples;++i){
+        const int64_t source=i*nominal60,arrival=i*actual5994;
+        pairCapture.resetPair(7,source,arrival,nominal60,true);
+        const int64_t generated=source-nominal60/2,deadline=pairCapture.deadline(generated);
+        pairDeadlineBounded&=deadline>=arrival&&deadline<=arrival+nominal60;
+    }
+    check(pairDeadlineBounded,"pair-anchored capture FG deadline does not accumulate source-clock drift");
     engine::PresentationScheduler ps5Timeline;bool decodedPairFits=true;
     for(int64_t i=1;i<120;++i){
         const int64_t b=i*166667,decoded=1000000+b+(i%2?150000:20000);
