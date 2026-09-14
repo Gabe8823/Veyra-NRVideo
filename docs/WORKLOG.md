@@ -2003,3 +2003,21 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 用户反馈 AV1、MOV 等文件“不能支持”，授权先研究并给出方案。本轮只读取源代码、1.2.0 随包 patched FFmpeg 构建记录和本机 DLL ABI，不修改产品功能、不构建、不更换 FFmpeg、不发布。实际 `avcodec-63.dll` 查询确认 H.264/HEVC/AV1/VP9/ProRes/DNxHD/MPEG-2/MPEG-4/VC-1 均有软件解码器；FFmpeg 配置与源码确认 MOV/MP4、Matroska/WebM、AVI、MPEG-TS 解封装器存在。当前问题不是一个 AV1 allowlist：文件对话框已有 MOV/AVI/TS 与所有文件，而普通文件又硬编码关闭硬解、图创建前不能可靠得到首帧的位深/HDR信息、失败提示过于笼统。FFmpeg 配置禁用了 libdav1d，保留原生 AV1，不能凭“能解码”承诺性能。
 
 完整的可回退分阶段实施/验收计划见 docs/MEDIA_FILE_COMPATIBILITY_PLAN_2026-09-14.md。重点先做预检诊断和安全的 Auto 硬解→软件回退，再贯通首帧色彩契约与样本矩阵；dav1d/重建 patched FFmpeg 仅在真实性能基准证明必要后独立审计。未拿到用户问题文件或其日志，不能断言当前失败的具体 codec/profile/metadata 原因。
+
+## 2026-09-14 — 媒体文件兼容性施工：AV1/MOV 与首帧/硬解回退
+
+在 `codex/media-codec-compatibility` 隔离分支施工。`SourceInfo` 现在记录容器、视频 codec 和首帧像素格式；普通文件先探测首个有效视频帧再创建 EnhanceGraph，图描述会收到文件位深；文件路径默认尝试 D3D12VA，D3D12 纹理不是单层 NV12/P010、硬解报错或首帧导入契约不满足时，在首帧前原子重开软件解码并记录原因。日志补充首帧实际 format、HDR/matrix/transfer/range/chromaLocation；FFmpeg D3D12VA 导入增加纹理维度、mip、sample、尺寸与 DXGI 格式校验。没有改 PS5/采集卡入口的协议。
+
+真实证据：旧 1.2.0 patched FFmpeg 的 AV1 MP4 软件探针虽找到 `av1`，首帧失败 `code=-40 Function not implemented`；因此“枚举到解码器”确实不是“可以播放”。使用项目外 vcpkg `dav1d 1.5.4`（Apache-2.0/BSD-2-Clause/ISC/MIT）并保留 PS5 H.264 32→256 slice patch 重建独立 FFmpeg prefix；配置含 `--enable-libdav1d`、许可证仍为 LGPL 2.1+，`avcodec-63.dll` 对 `dav1d.dll` 的动态依赖已由 dumpbin 核实。新运行目录中：AV1 MP4 软件解码30帧 PASS（实际 codec=libdav1d）、ProRes MOV软件解码30帧 PASS；新五个FFmpeg DLL + dav1d 下 H.264 D3D12VA/共享设备/NR 12帧 PASS；旧 H.264 软件源测试23/23 PASS。新 prefix 的五个FFmpeg DLL和dav1d哈希、外部依赖许可记录在本机 `C:/veyra-deps/ffmpeg-ps5-dav1d-installed/share/ffmpeg/veyra-local-build.json`，未进入Git。
+
+构建命令 `cmd /c out/release-1.1.0-build.cmd` 最终成功；中间一次 `veyra.exe` 链接遇到旧进程/临时锁，重跑后通过。`git diff --check` 待本轮收口时执行。当前新FFmpeg尚未替换1.2.0 GitHub Release资产，也未制作/上传包含dav1d源码、port、版权和SPDX的对应源码包；不能把1.2.0写成已支持AV1。未执行用户原始AV1/MOV文件、长时播放、所有10/12-bit/4:2:2/4:4:4组合及实机画质验收；下一步补运行脚本/便携审计与真实样本矩阵，再决定是否制作新版本。
+
+## 2026-09-14 — 媒体兼容性施工收口（本地分支，未发布）
+
+在 `codex/media-codec-compatibility` 完成首个可运行闭环：`FFmpegVideoDecoder` 对 AV1 优先选择可选的 `libdav1d`，无该后端时保留 FFmpeg 原生回退；文件源默认尝试共享 D3D12VA，首帧前发现解码错误或 D3D12 纹理不满足 2D/NV12/P010/尺寸契约时自动重开软件解码；图创建前消费首帧缓存，避免 AV1/MOV 的真实位深和 HDR 信令被错误地按 SDR 建图。构建脚本支持 `-FfmpegRoot`，并只从所选前缀把 `dav1d.dll` 放到应用目录；便携脚本同步复制 DAV1D 版权/SPDX，未改变源码仓库的二进制隔离规则。文件源头文件注释已更新为按 FFmpeg 实际容器/codec 能力描述。
+
+本机外部依赖 `C:/veyra-deps/ffmpeg-ps5-dav1d-installed` 已补齐 `dav1d.dll`（SHA256 `38E09F960822A081FC46FC296FB3EF5F841D1A6C15A39F20684C2F9D88A9FC52`）及对应许可证；FFmpeg 配置实际含 `--enable-libdav1d`，保留 PS5 H.264 32→256 slice patch。构建命令为：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 ... -BuildDirectory out/media-codec-dav1d -FfmpegRoot C:/veyra-deps/ffmpeg-ps5-dav1d-installed`，478/478 编译链接通过，输出包含五个 FFmpeg DLL 和 `dav1d.dll`。PowerShell 三个脚本语法解析均为0错误，`git diff --check`收口通过。
+
+验证结果：新 `veyra_media_probe.exe` 的 AV1 MP4 软件解码30帧 PASS（日志明确 `codec=libdav1d`）；ProRes MOV 软件解码30帧 PASS；同一新运行目录的 H.264 D3D12VA/共享设备/NR 12帧 PASS（NGX Create/Evaluate/Release 为 `0x1`、SEH0）；H.264 `veyra_source_tests` 23/23，软件媒体探针30帧 PASS；`veyra_quality_probe` 对 AV1 30帧、无增强图完整处理，`failures=0`；独立便携包只关闭增强的完整播放器 smoke 运行3秒，`smoke frames=60 generated=0 failed=false`，自动从 AV1 D3D12VA 回退到 `libdav1d` 并保存/显示正常。实际合法的 AV1-MOV 样本无法由当前 FFmpeg MOV muxer生成（其明确拒绝 AV1 写入 MOV），因此没有把“AV1 MOV”写成已验证格式；MOV 按容器内实际 codec 分开判断。
+
+本地 `package-portable.ps1` 已成功生成带 `dav1d.dll`、DAV1D 版权/SPDX 和 FFMPEG provenance 的1.2.0测试包。`portable-smoke.ps1` 的基础、社区NR、DLSS NR/FG场景产生了有效输出；最后的既有 VideoSR 断言因当前驱动未加载脚本要求的 `_nvngx.dll` 失败，日志保留在 `out/media-codec-dav1d-portable-smoke/video-sr-nr-fg.stdout.log`，不归因于AV1/MOV。新 FFmpeg 仍未替换1.2.0 GitHub Release，未制作/上传包含 dav1d 对应源码/port 的正式对应源码包；用户原始文件、长时播放、10/12-bit、4:2:2/4:4:4 和其他显卡尚未验收，不能宣称所有格式和设备均已支持。

@@ -49,7 +49,19 @@ bool FFmpegVideoDecoder::openSoftware(const AVCodecParameters* codecParameters,
     frameTimeBaseNum_ = streamTimeBaseNum;
     frameTimeBaseDen_ = streamTimeBaseDen;
 
-    const AVCodec* codec = avcodec_find_decoder(codecParameters->codec_id);
+    // The FFmpeg native AV1 decoder is hardware-path oriented in the
+    // pinned Windows build.  When the optional LGPL-compatible dav1d
+    // backend is present, prefer it for software playback so AV1 files do
+    // not fail after the demuxer has already accepted them.  Keep the
+    // native decoder as a fallback for installations that do not ship
+    // dav1d (and let the caller report the actual decode error).
+    const AVCodec* codec = nullptr;
+    if (codecParameters->codec_id == AV_CODEC_ID_AV1) {
+        codec = avcodec_find_decoder_by_name("libdav1d");
+    }
+    if (codec == nullptr) {
+        codec = avcodec_find_decoder(codecParameters->codec_id);
+    }
     if (codec == nullptr) {
         log::error("media", std::format("decoder: no software decoder for codecId={}", static_cast<int>(codecParameters->codec_id)));
         return false;
@@ -169,6 +181,30 @@ void FFmpegVideoDecoder::close()
     if (context_ != nullptr) {
         avcodec_free_context(&context_);
     }
+    hwAccelActive_ = false;
+    lastFrameFormat_ = -1;
+    gpuQueueWaitCount_ = 0;
+}
+
+bool FFmpegVideoDecoder::hardwareFrameImportable() const
+{
+    if (!hardwareActive() || frame_ == nullptr || frame_->format != AV_PIX_FMT_D3D12) {
+        return false;
+    }
+    auto* d3dFrame = reinterpret_cast<AVD3D12VAFrame*>(frame_->data[0]);
+    if (d3dFrame == nullptr || d3dFrame->texture == nullptr) {
+        return false;
+    }
+    const auto desc = d3dFrame->texture->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.DepthOrArraySize == 0 ||
+        desc.MipLevels != 1 || desc.SampleDesc.Count != 1) {
+        return false;
+    }
+    if (desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010) {
+        return false;
+    }
+    return context_ != nullptr && desc.Width == static_cast<UINT64>(context_->width) &&
+        desc.Height == static_cast<UINT>(context_->height);
 }
 
 int FFmpegVideoDecoder::width() const

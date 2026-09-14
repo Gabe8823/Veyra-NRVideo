@@ -56,6 +56,9 @@ try {
         foreach($module in @('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swresample-7.dll','swscale-10.dll','vcruntime140.dll')+$case.modules){
             if(-not $loaded.ContainsKey($module) -or -not $loaded[$module].StartsWith($package+'\',[StringComparison]::OrdinalIgnoreCase)){throw "$name missing app-local module $module ($($loaded[$module]))"}
         }
+        if($loaded.ContainsKey('dav1d.dll') -and -not $loaded['dav1d.dll'].StartsWith($package+'\',[StringComparison]::OrdinalIgnoreCase)){
+            throw "$name loaded dav1d.dll outside the portable package ($($loaded['dav1d.dll']))"
+        }
         if($case.modules -contains 'nvngx_dlssnr.dll'){
             $nrFolder=if($name -eq 'ampere-nr'){'runtime/experimental/nr-ampere'}elseif($name -eq 'community-sr-nr-fg'){'runtime/experimental/nr-community'}else{'runtime/experimental'}
             $expectedNr=[IO.Path]::GetFullPath((Join-Path $package "$nrFolder/nvngx_dlssnr.dll"))

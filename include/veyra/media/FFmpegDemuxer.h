@@ -39,6 +39,7 @@ public:
     const AVCodecParameters* videoCodecParameters() const;
     int videoTimeBaseNum() const; // stream time_base for frame PTS conversion
     int videoTimeBaseDen() const;
+    std::string formatName() const;
 
     // Returns false at end of file. The packet stays owned by this demuxer
     // and remains valid until the next call.

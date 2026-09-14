@@ -33,6 +33,11 @@ struct SourceInfo {
     int nominalRateNum = 0, nominalRateDen = 0; // candidate, not proof of CFR
     double timestampQuantum = 0.0;
     bool hardwareDecodeActive = false;
+    // File diagnostics. These are descriptive capability results, not a
+    // promise that every profile of the codec is supported.
+    std::string containerName;
+    std::string videoCodecName;
+    std::string videoPixelFormatName;
     pipeline::ColorDescription color;
 };
 

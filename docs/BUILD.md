@@ -19,7 +19,7 @@ cd Veyra-NRVideo
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Root . -Preset x64-release
 ```
 
-`build.ps1` resolves Visual Studio and CMake, stages the five FFmpeg DLLs, and builds `out/build/x64-release/veyra.exe`. Its default FFmpeg location is `C:/veyra-deps/installed/x64-windows`. Use the CMake cache variables below for other dependency layouts. `-BuildDirectory` selects a separate output directory while an existing build is running.
+`build.ps1` resolves Visual Studio and CMake, stages the five FFmpeg DLLs, and builds `out/build/x64-release/veyra.exe`. Its default FFmpeg location is `C:/veyra-deps/installed/x64-windows`. Use `-FfmpegRoot C:/path/to/prefix` when testing another FFmpeg prefix; the prefix must contain matching `include`, `lib`, `bin`, and `share/ffmpeg` trees. An AV1-enabled local prefix must also provide `bin/dav1d.dll` and its `share/dav1d` notices; the build script stages that DLL app-locally and never searches the system PATH. `-BuildDirectory` selects a separate output directory while an existing build is running.
 
 | CMake variable | Local dependency |
 | --- | --- |
@@ -37,6 +37,8 @@ The NGX configuration lives in `runtime_local/config/ngx-local.json` for develop
 ## Dependency Sources
 
 Release 1.2.0 includes `Veyra-1.2.0-FFmpeg-source.zip` separately: the patched FFmpeg source, SPDX-verified vcpkg port and patches, notices, and configuration queried from the shipped DLL. It is not needed to run Veyra.
+
+The AV1 software-decoding experiment is kept in a separate local FFmpeg prefix until its corresponding-source package and release audit are complete. It uses FFmpeg's LGPL build with the optional LGPL-compatible dav1d backend. MOV is a container rather than a codec: ProRes/H.264/HEVC MOV playback is tested independently, while an AV1 file must still use a container/muxer that actually carries AV1 (typically MP4 or WebM). A file extension alone is never treated as a compatibility guarantee.
 
 - FFmpeg: https://github.com/FFmpeg/FFmpeg/tree/n9.0.1 ; vcpkg port source recorded in the distributed `licenses/FFMPEG-SPDX.json`.
 - vcpkg FFmpeg port: https://github.com/microsoft/vcpkg/tree/55cd8b8a4f19d8e6ba2ad114c8acacc4af5915a0/ports/ffmpeg . Its patches and the LGPL notices are part of the corresponding-source material.

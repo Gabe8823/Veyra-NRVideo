@@ -9,6 +9,7 @@ param(
     [string]$RemotePlayPrefixPath,
     [string]$ProtocPath,
     [string]$PkgConfigPath,
+    [string]$FfmpegRoot,
     [switch]$Clean
 )
 
@@ -74,7 +75,7 @@ else {
 
 # FFmpeg dependency roots (C:\veyra-deps: the project path contains spaces,
 # which FFmpeg's build refuses; see loop/JOURNAL.md).
-$ffmpegRoot = "C:\veyra-deps\installed\x64-windows"
+$ffmpegRoot = if ($FfmpegRoot) { [IO.Path]::GetFullPath($FfmpegRoot) } else { "C:\veyra-deps\installed\x64-windows" }
 if (Test-Path -LiteralPath (Join-Path $ffmpegRoot "include\libavformat\avformat.h") -PathType Leaf) {
     $configureExtra = $configureExtra + (' -DVEYRA_FFMPEG_ROOT="{0}"' -f $ffmpegRoot)
 }
@@ -118,6 +119,16 @@ $exitCode = $LASTEXITCODE
 if ($exitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $buildDir 'veyra.exe'))) {
     foreach ($name in @('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swresample-7.dll','swscale-10.dll')) {
         Copy-Item -LiteralPath (Join-Path $ffmpegRoot "bin/$name") -Destination $buildDir
+    }
+    # AV1 software decoding is optional at the FFmpeg build level.  When the
+    # selected prefix was built with libdav1d, keep its app-local dependency
+    # beside avcodec; never silently copy a system or unrelated dav1d DLL.
+    $dav1d = Join-Path $ffmpegRoot 'bin/dav1d.dll'
+    $stagedDav1d = Join-Path $buildDir 'dav1d.dll'
+    if (Test-Path -LiteralPath $dav1d -PathType Leaf) {
+        Copy-Item -LiteralPath $dav1d -Destination $stagedDav1d -Force
+    } elseif (Test-Path -LiteralPath $stagedDav1d -PathType Leaf) {
+        Remove-Item -LiteralPath $stagedDav1d -Force
     }
 }
 Write-Host ("build.ps1: preset {0} exitCode={1}" -f $Preset, $exitCode)

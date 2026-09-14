@@ -13,7 +13,19 @@ $stage = Join-Path $resolvedOutput "Veyra-$Version-win64-portable"
 $archive = "$stage.zip"
 # Preserve existing candidates and their verification evidence.
 if ((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $archive)) { throw 'Output exists; choose a new staging directory.' }
+$ffmpegRoot = 'C:\veyra-deps\installed\x64-windows'
+$cachePath = Join-Path $bin 'CMakeCache.txt'
+if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
+  $ffmpegMatch = [regex]::Match((Get-Content -LiteralPath $cachePath -Raw), '(?m)^VEYRA_FFMPEG_ROOT:[^=]*=(.+)$')
+  if ($ffmpegMatch.Success -and -not [string]::IsNullOrWhiteSpace($ffmpegMatch.Groups[1].Value)) {
+    $ffmpegRoot = $ffmpegMatch.Groups[1].Value.Trim()
+  }
+}
+$ffmpegBin = Join-Path $ffmpegRoot 'bin'
 $applicationFiles = @('veyra.exe','avcodec-63.dll','avformat-63.dll','avutil-61.dll','swresample-7.dll','swscale-10.dll')
+if (Test-Path -LiteralPath (Join-Path $ffmpegBin 'dav1d.dll') -PathType Leaf) {
+  $applicationFiles += 'dav1d.dll'
+}
 if ([version]$Version -ge [version]'0.0.5') {
   $cache = Get-Content -LiteralPath (Join-Path $bin 'CMakeCache.txt') -Raw
   if ($cache -notmatch 'VEYRA_ENABLE_REMOTEPLAY:BOOL=ON') { throw '0.0.5 package requires the real PS5 backend enabled' }
@@ -83,9 +95,13 @@ foreach ($notice in Get-ChildItem -LiteralPath (Join-Path $resolvedRoot 'third_p
   Copy-Payload $notice.FullName "licenses/gpu-dis/licenses/$($notice.Name)"
 }
 Copy-Payload (Join-Path $resolvedRoot 'runtime_local/config/ngx-local.json') 'runtime/config/ngx-local.json'
-Copy-Payload 'C:/veyra-deps/installed/x64-windows/share/ffmpeg/copyright' 'licenses/FFMPEG-COPYRIGHT.txt'
-Copy-Payload 'C:/veyra-deps/installed/x64-windows/share/ffmpeg/vcpkg.spdx.json' 'licenses/FFMPEG-SPDX.json'
-$ffmpegLocalBuild = 'C:/veyra-deps/installed/x64-windows/share/ffmpeg/veyra-local-build.json'
+Copy-Payload (Join-Path $ffmpegRoot 'share/ffmpeg/copyright') 'licenses/FFMPEG-COPYRIGHT.txt'
+Copy-Payload (Join-Path $ffmpegRoot 'share/ffmpeg/vcpkg.spdx.json') 'licenses/FFMPEG-SPDX.json'
+$dav1dCopyright = Join-Path $ffmpegRoot 'share/dav1d/copyright'
+$dav1dSpdx = Join-Path $ffmpegRoot 'share/dav1d/vcpkg.spdx.json'
+if (Test-Path -LiteralPath $dav1dCopyright -PathType Leaf) { Copy-Payload $dav1dCopyright 'licenses/DAV1D-COPYRIGHT.txt' }
+if (Test-Path -LiteralPath $dav1dSpdx -PathType Leaf) { Copy-Payload $dav1dSpdx 'licenses/DAV1D-SPDX.json' }
+$ffmpegLocalBuild = Join-Path $ffmpegRoot 'share/ffmpeg/veyra-local-build.json'
 if (Test-Path -LiteralPath $ffmpegLocalBuild) {
   $ffmpegBuild = Get-Content -LiteralPath $ffmpegLocalBuild -Raw | ConvertFrom-Json
   foreach ($file in $ffmpegBuild.files) {

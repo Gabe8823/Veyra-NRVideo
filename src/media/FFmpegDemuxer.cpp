@@ -137,6 +137,14 @@ int FFmpegDemuxer::videoTimeBaseDen() const
     return context_->streams[videoStreamIndex_]->time_base.den;
 }
 
+std::string FFmpegDemuxer::formatName() const
+{
+    if (context_ == nullptr || context_->iformat == nullptr || context_->iformat->name == nullptr) {
+        return {};
+    }
+    return context_->iformat->name;
+}
+
 bool FFmpegDemuxer::readVideoPacket(bool& endOfFile)
 {
     endOfFile = false;

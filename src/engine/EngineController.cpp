@@ -153,7 +153,13 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 width=image.width;height=image.height;options.fg=false;
                 {std::lock_guard lock(mutex_);desired_.multiplier=1;snapshot_.image=true;snapshot_.desired=desired_;}
             }else{
-                source::SourceOpenDesc od;od.path=path;od.preferHardwareDecode=false;
+                source::SourceOpenDesc od;od.path=path;
+                // Files use the same shared D3D12 device as the graph. The
+                // source performs a capability check and falls back to
+                // software before returning its first frame; capture/PS5
+                // retain their own decode contracts.
+                od.preferHardwareDecode=!isCapture;
+                if(od.preferHardwareDecode){od.d3d12Device=ctx.device();od.d3d12Queue=ctx.directQueue();}
                 // Diagnostic uses the production graph/presenter to validate
                 // D3D12VA imports without needing a paired PS5 or credentials.
                 if(!isCapture&&GetEnvironmentVariableW(L"VEYRA_TEST_FILE_HW_DECODE",nullptr,0)){
@@ -178,13 +184,30 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 }else
 #endif
                 if(!(physicalCapture?captureSource.configure(od):activeSource->open(od))){status(L"无法打开视频，请查看诊断",true);break;}
+                // A file's actual decoded pixel format and HDR VUI are only
+                // reliable on AVFrame. Prime one frame before constructing
+                // the graph so AV1/MOV 10-bit and HDR inputs do not get an
+                // SDR graph by mistake. The cloned frame is consumed by the
+                // normal owner-thread loop below, preserving its PTS.
+                if(!isCapture){
+                    pipeline::FramePacket firstPacket;const AVFrame* firstFrame=nullptr;
+                    const auto firstStatus=activeSource->read(firstPacket,&firstFrame);
+                    if(firstStatus!=source::SourceReadStatus::Frame||firstFrame==nullptr||firstPacket.pts.isUnknown()){
+                        status(activeSource->info().kind==pipeline::SourceKind::File&&source.errorMessage().empty()
+                            ?L"视频首帧无法解码或没有有效时间戳，请查看诊断":source.errorMessage().empty()?L"视频首帧读取失败":source.errorMessage(),true);
+                        break;
+                    }
+                    cachedFrame=av_frame_clone(firstFrame);
+                    if(!cachedFrame){status(L"视频首帧缓存失败",true);break;}
+                    cachedPacket=firstPacket;
+                }
                 width=activeSource->info().width;height=activeSource->info().height;duration=isCapture?0:activeSource->info().duration.toDouble();
             }
             if(!pipeline::Extent{width,height}.valid()){status(L"图像尺寸超出单张GPU纹理能力，需要分块处理",true);break;}
             pipeline::EnhanceGraphDesc gd;gd.sourceWidth=width;gd.sourceHeight=height;gd.hdrInput=!isImage&&activeSource->info().color.isHdrPath();
             gd.highQualityPresentation=isRemote&&activeSource->info().color.reconstructChroma;
             gd.rgbInput=isImage||(isCapture&&activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::Bgra8);
-            if(physicalCapture)gd.captureBitDepth=activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::P010?10:activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::P016?16:8;
+            gd.captureBitDepth=activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::P010?10:activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::P016?16:8;
             gd.yuy2Input=isCapture&&activeSource->info().color.pixelFormat==pipeline::SourcePixelFormat::Yuy2;gd.stillImage=isImage;
             const auto resolution=pipeline::ResolutionPlan::make({width,height},options.sr,options.realtime?pipeline::NrSizePolicy::Realtime:pipeline::NrSizePolicy::Native,isImage,options.settings.revision,options.settings.srTarget,options.settings.lowLatency&&options.nr);
             gd.workWidth=resolution.base.width;gd.workHeight=resolution.base.height;gd.nrWidth=resolution.nr.width;gd.nrHeight=resolution.nr.height;gd.flowWidth=resolution.flow.width;gd.flowHeight=resolution.flow.height;
@@ -214,6 +237,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
             status(isImage?L"图片已增强，可保存PNG/JPEG":std::format(L"{} | 输入 {}×{} / 底图 {}×{} / NR {}×{} / 光流 {}×{} / FG与输出 {}×{} | {}",isRemote?L"PS5 串流":isCapture?L"实时采集":L"播放",width,height,gd.workWidth,gd.workHeight,gd.nrWidth,gd.nrHeight,gd.flowWidth,gd.flowHeight,gd.workWidth,gd.workHeight,gd.nrBeforeSr?L"低延迟 · NR先行后超分":gd.nrWidth<gd.workWidth?L"实时内部处理并回填":L"原生NR（性能成本较高）"));
             pipeline::EnhanceGraph::FrameOutputs out;bool reset=true,hasOutput=false,audioRebuffering=false,seekPreviewPending=false;
             bool initialRemoteFramePending=isRemote;
+            bool initialFileFramePending=!isImage&&!isCapture;
             uint64_t activeSeekId=0;
             bool fileAwaitingVideo=true,fileAudioAlignPending=true,fileInputEnded=false;double lastFilePresentedMs=0,lastFilePresentLateness=0;std::deque<double> latenessSamples;
             if(!isImage&&!isCapture&&audioPipe.open(path)){
@@ -492,7 +516,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                     if(Clock::now()<*sourceGapUntil){advanceLive();waitLive();continue;}
                 }
                 pipeline::FramePacket pkt;const AVFrame* frame=imageFrame;
-                if(cachedFrame&&(initialRemoteFramePending||(transaction&&(!isCapture||paused_)))){frame=cachedFrame;pkt=cachedPacket;initialRemoteFramePending=false;}
+                if(cachedFrame&&((initialRemoteFramePending||initialFileFramePending)||(transaction&&(!isCapture||paused_)))){frame=cachedFrame;pkt=cachedPacket;initialRemoteFramePending=false;initialFileFramePending=false;}
                 else if(!isImage){
                     auto rs=physicalCapture?captureSource.tryRead(pkt,&frame):activeSource->read(pkt,&frame);
                     // Keep the accepted transaction and rollback state alive until

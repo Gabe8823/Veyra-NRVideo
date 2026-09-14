@@ -6,9 +6,9 @@
 
 本机随 1.2.0 发布的 patched FFmpeg n9.0.1 配置已经包含 `avformat` 和原生软件解码器。对实际随包 `avcodec-63.dll` 调用 `avcodec_descriptor_get_by_name` / `avcodec_find_decoder` 的结果为：H.264、HEVC、AV1、VP9、ProRes、DNxHD、MPEG-2、MPEG-4、VC-1 均能找到解码器；配置也保留 MOV/MP4、Matroska/WebM、AVI、MPEG-TS 解封装器。文件选择框已经列出 MP4/MKV/MOV/AVI/TS，且保留“所有文件”。
 
-这不等于产品已经可靠支持这些素材。普通文件播放目前强制 `preferHardwareDecode=false`，全部走软件解码；图在创建前只从 `AVCodecParameters` 推断色彩与位深，许多 MOV/AV1 文件的真实像素格式、HDR 信令、色度位置要到首帧才确定；失败 UI 只显示“无法打开视频”。因此用户看到“不支持”时，可能是软件 AV1 性能不足、HDR/10-bit/4:2:2/4:4:4 输入契约不完整、音轨初始化失败，或文件本身损坏，而不是 FFmpeg 完全没有 AV1/MOV。
+这不等于产品已经可靠支持这些素材。1.2.0 基线的普通文件播放曾强制 `preferHardwareDecode=false`，全部走软件解码；本分支已改为先尝试共享 D3D12VA，并在首帧导入契约不满足时回到软件。图在创建前只从 `AVCodecParameters` 推断色彩与位深仍然不够，许多 MOV/AV1 文件的真实像素格式、HDR 信令、色度位置要到首帧才确定；失败 UI 只显示“无法打开视频”。因此用户看到“不支持”时，可能是软件 AV1 性能不足、HDR/10-bit/4:2:2/4:4:4 输入契约不完整、音轨初始化失败，或文件本身损坏，而不是 FFmpeg 完全没有 AV1/MOV。
 
-当前 patched FFmpeg 的构建配置禁用 `libdav1d`，但保留 FFmpeg 自带 AV1 解码器；这能解码，不代表 CPU 性能足够。RTX 30 及更早显卡通常不能把 AV1 解码交给硬件，不能假装它们会获得 RTX 40/50 的 AV1 硬解表现。
+1.2.0 随包的 patched FFmpeg 构建配置禁用了 `libdav1d`。对实际 AV1 MP4 做软件探针时，原生 AV1 解码器枚举成功，但首包返回 `-40 / Function not implemented`，所以“能枚举”不能当成“能播放”。本轮已在项目外依赖目录用同一套 PS5 slice 补丁重建 FFmpeg，启用 `libdav1d 1.5.4`；新构建的 AV1 30 帧、ProRes-MOV 30 帧软件探针均通过，H.264 D3D12VA + NR 探针也通过。该新依赖尚未替换 1.2.0 发布资产，完整便携包和对应源码包审计仍是下一步。RTX 30 及更早显卡通常不能把 AV1 解码交给硬件，不能假装它们会获得 RTX 40/50 的 AV1 硬解表现。
 
 ## 范围与不承诺
 
@@ -20,7 +20,7 @@
 
 ### A. 先做媒体预检和真实错误报告
 
-新增独立 `MediaProbe`，在创建增强图前读取：容器名称、视频 codec/profile、像素格式/位深、尺寸、帧率与 VFR、色彩范围/矩阵/transfer/primaries、色度位置、音频 codec/声道布局，以及 FFmpeg 能否找到软件解码器和 D3D12VA 硬件配置。
+现有 `veyra_media_probe` 和文件源日志在创建增强图前读取：容器名称、视频 codec/profile、像素格式/位深、尺寸、帧率与 VFR、色彩范围/矩阵/transfer/primaries、色度位置、音频 codec/声道布局，以及 FFmpeg 能否找到软件解码器和 D3D12VA 硬件配置。
 
 预检结果产生明确的支持结论，而不是靠扩展名：
 
@@ -63,7 +63,7 @@ UI 在打开失败时显示上述原因；日志完整记录 FFmpeg codec id/nam
 
 基准以 1080p60、1440p60、4K30/60 AV1 各跑硬解和软件解，记录 decode P50/P95、掉帧、CPU、GPU、首帧、seek、音画同步。当前软件线程上限为 4；只有基准证明 AV1 受 CPU 解码限制时，才做 codec/分辨率感知的有上限线程策略。
 
-若原生 FFmpeg AV1 软件解仍不足，再单独评估将 BSD 许可的 `libdav1d` 接入 FFmpeg。那是依赖重建节点，不是“加 DLL”小修：必须重建并重新验证 PS5 H.264 slice patch、更新对应 FFmpeg 源码包、构建记录、许可证、运行库 SHA-256 和完整便携包审计。没有这一整套证据，不替换 1.2.0 的 FFmpeg。
+本轮已经完成了依赖评估：原生 AV1 路径对真实样本失败，因此 `libdav1d 1.5.4` 接入 FFmpeg。重建保留了 PS5 H.264 32→256 slice patch，配置仍是 LGPL；独立 prefix 的 `veyra-local-build.json` 记录五个 FFmpeg DLL 和 `dav1d.dll` 的 SHA-256、版本、许可证与来源。仍未把它直接替换进 1.2.0 发布包：发布前必须把 dav1d 对应源码/port、版权与 SPDX、运行库清单、完整便携包和 AV1/MOV 回归一起审计。
 
 ### F. 音频和导出不要借机回归
 
@@ -77,4 +77,4 @@ UI 在打开失败时显示上述原因；日志完整记录 FFmpeg codec id/nam
 4. 再打开 NR、SR、DLSS/XeSS FG 做至少一条 SDR 和一条 HDR 回归；导出、截图、PS5、采集卡必须跑现有 delivery，确保本节点没有改变它们的输入路径。
 5. 每次解码路径切换、seek、首帧色彩改变都原子 reset 图历史。硬解首次帧不符合 NV12/P010 时回退软件，不允许半会话继续。
 
-若 A 的诊断表明用户 AV1/MOV 已可被当前 DLL 解码，则优先修 Auto 硬解、色彩契约和 UI 诊断；不为了“支持列表好看”引入 dav1d 或重新打包 FFmpeg。若用户样本是 Dolby Vision、ProRes RAW 或受 DRM 保护，则明确拒绝并说明原因，不做不可靠的兼容层。
+当前代码已完成首帧颜色/位深探测、普通文件 Auto 硬解到软件回退、硬件纹理导入契约和具体解码日志；实际新 FFmpeg 的 AV1/ProRes 探针证据见 `docs/WORKLOG.md`。若用户样本是 Dolby Vision、ProRes RAW 或受 DRM 保护，则仍明确拒绝并说明原因，不做不可靠的兼容层。新 FFmpeg 尚未成为正式发布资产，不能把本地验证写成 1.2.0 已支持。

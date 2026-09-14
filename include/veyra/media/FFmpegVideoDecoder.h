@@ -76,6 +76,11 @@ public:
     int frameTimeBaseDen() const { return frameTimeBaseDen_; }
 
     bool usingD3D12Frames() const { return hwAccelActive_ && context_ != nullptr && lastFrameFormat_ != -1; }
+    bool hardwareActive() const { return hwAccelActive_ && context_ != nullptr; }
+    // The product ingress currently imports only 2D NV12/P010 D3D12VA
+    // surfaces. Validate that contract before handing the first frame to the
+    // graph so an unsupported hardware surface can fall back cleanly.
+    bool hardwareFrameImportable() const;
     int lastFrameFormat() const { return lastFrameFormat_; }
     uint64_t gpuQueueWaitCount() const { return gpuQueueWaitCount_; }
 

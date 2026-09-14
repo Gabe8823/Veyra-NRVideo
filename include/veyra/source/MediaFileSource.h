@@ -1,11 +1,14 @@
 #pragma once
 
-// MediaFileSource - local video file input (H.264/HEVC in MP4/MKV/MOV)
+// MediaFileSource - local video file input (FFmpeg containers/codecs,
+// including H.264/HEVC/AV1 and professional MOV codecs when the selected
+// FFmpeg prefix provides their decoders)
 // composing the product veyra_media libraries. No second decode
 // implementation exists here: FFmpegDemuxer + FFmpegVideoDecoder do the
 // work; this class owns contract translation (PTS/duration/color/flags/
 // epoch) and the seek protocol.
 #include <cstdint>
+#include <string_view>
 
 #include "veyra/media/FFmpegDemuxer.h"
 #include "veyra/media/FFmpegVideoDecoder.h"
@@ -34,6 +37,7 @@ public:
 
 private:
     pipeline::ColorDescription parseColor(const AVCodecParameters* params) const;
+    bool fallbackToSoftware(std::string_view reason);
 
     media::FFmpegDemuxer demuxer_;
     media::FFmpegVideoDecoder decoder_;
@@ -47,6 +51,8 @@ private:
     bool eofSignalled_ = false;
     std::wstring errorMessage_;
     int64_t lastPtsUs_ = INT64_MIN;
+    std::wstring path_;
+    bool preferHardwareDecode_ = false;
 };
 
 } // namespace veyra::source

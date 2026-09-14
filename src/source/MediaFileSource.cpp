@@ -4,11 +4,13 @@
 #include <climits>
 #include <cmath>
 #include <format>
+#include <string_view>
 
 #include "veyra/Log.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/pixdesc.h>
 }
 
 namespace veyra::source {
@@ -27,6 +29,36 @@ int64_t rationalToUs(const pipeline::Rational& r)
 MediaFileSource::~MediaFileSource()
 {
     close();
+}
+
+bool MediaFileSource::fallbackToSoftware(std::string_view reason)
+{
+    if (!decoder_.hardwareActive() || framesRead_ != 0 || path_.empty()) {
+        return false;
+    }
+    veyra::log::warn("source-file", std::format(
+        "D3D12VA first-frame fallback to software reason={} path=redacted", reason));
+    decoder_.close();
+    demuxer_.close();
+    if (!demuxer_.open(path_)) {
+        veyra::log::error("source-file", "software fallback could not reopen demuxer");
+        return false;
+    }
+    const auto* params = demuxer_.videoCodecParameters();
+    if (params == nullptr || !decoder_.openSoftware(params, demuxer_.videoTimeBaseNum(),
+            demuxer_.videoTimeBaseDen(), params->width > 1920 || params->height > 1080 ? 4u : 1u)) {
+        veyra::log::error("source-file", "software fallback decoder open failed");
+        return false;
+    }
+    info_.hardwareDecodeActive = false;
+    info_.containerName = demuxer_.formatName();
+    info_.videoPixelFormatName = params->format >= 0 && av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format))
+        ? av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format)) : "unknown";
+    draining_ = false;
+    eofSignalled_ = false;
+    pendingSeekFlag_ = false;
+    lastPtsUs_ = INT64_MIN;
+    return true;
 }
 
 pipeline::ColorDescription MediaFileSource::parseColor(const AVCodecParameters* params) const
@@ -80,6 +112,8 @@ pipeline::ColorDescription MediaFileSource::parseColor(const AVCodecParameters* 
 bool MediaFileSource::open(const SourceOpenDesc& desc)
 {
     close();
+    path_ = desc.path;
+    preferHardwareDecode_ = desc.preferHardwareDecode && desc.d3d12Device != nullptr && desc.d3d12Queue != nullptr;
     if (!demuxer_.open(desc.path)) {
         veyra::log::error("source-file", "demuxer open failed");
         return false;
@@ -127,7 +161,11 @@ bool MediaFileSource::open(const SourceOpenDesc& desc)
     info_.nominalRateNum = demuxer_.nominalRateNum();
     info_.nominalRateDen = demuxer_.nominalRateDen();
     info_.timestampQuantum = demuxer_.videoTimeBaseDen() > 0 ? double(demuxer_.videoTimeBaseNum()) / demuxer_.videoTimeBaseDen() : 0;
-    info_.hardwareDecodeActive = decoder_.usingD3D12Frames();
+    info_.hardwareDecodeActive = decoder_.hardwareActive();
+    info_.containerName = demuxer_.formatName();
+    info_.videoCodecName = avcodec_get_name(params->codec_id);
+    info_.videoPixelFormatName = params->format >= 0 && av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format))
+        ? av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format)) : "unknown";
     info_.color = parseColor(params);
 
     sequence_ = 0;
@@ -141,10 +179,10 @@ bool MediaFileSource::open(const SourceOpenDesc& desc)
     ++epoch_; // fresh open = new epoch
 
     veyra::log::info("source-file", std::format(
-        "opened {}x{} dur={}s avgFps={:.3f} hw={} matrix={}{} range={}{} transfer={}{}",
+        "opened {}x{} dur={}s avgFps={:.3f} container={} codec={} pixelFmt={} hw={} matrix={}{} range={}{} transfer={}{}",
         info_.width, info_.height,
         info_.duration.isUnknown() ? -1.0 : info_.duration.toDouble(),
-        info_.averageFps, info_.hardwareDecodeActive,
+        info_.averageFps, info_.containerName, info_.videoCodecName, info_.videoPixelFormatName, info_.hardwareDecodeActive,
         static_cast<int>(info_.color.matrix), info_.color.matrixAssumed ? "(assumed)" : "",
         static_cast<int>(info_.color.range), info_.color.rangeAssumed ? "(assumed)" : "",
         static_cast<int>(info_.color.transfer), info_.color.transferAssumed ? "(assumed)" : ""));
@@ -164,7 +202,14 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
         if (decoder_.receiveStatus() == media::DecodeReceiveStatus::EndOfStream) {
             return SourceReadStatus::Eos;
         }
-        if (decoder_.receiveStatus() == media::DecodeReceiveStatus::Error || draining_) {
+        if (decoder_.receiveStatus() == media::DecodeReceiveStatus::Error) {
+            if (fallbackToSoftware("decoder-error")) {
+                continue;
+            }
+            errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
+            return SourceReadStatus::Error;
+        }
+        if (draining_) {
             errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
             return SourceReadStatus::Error;
         }
@@ -184,9 +229,20 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
             return SourceReadStatus::Error;
         }
         if (!decoder_.sendPacket(demuxer_.currentPacket())) {
+            if (fallbackToSoftware("send-packet-error")) {
+                continue;
+            }
             errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
             return SourceReadStatus::Error;
         }
+    }
+
+    if (decoder_.hardwareActive() && !decoder_.hardwareFrameImportable()) {
+        if (fallbackToSoftware("unsupported-d3d12-surface")) {
+            return read(out, decodedFrame);
+        }
+        errorMessage_ = L"硬件解码输出格式无法导入，且软件回退失败";
+        return SourceReadStatus::Error;
     }
 
     if ((frame->flags & AV_FRAME_FLAG_CORRUPT) || frame->decode_error_flags) {
@@ -218,6 +274,27 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
     }
     out.sourceKind = pipeline::SourceKind::File;
     out.colorInfo = pipeline::resolveFrameColor(*frame,info_.color);
+    // D3D12VA frames expose the underlying surface through AV_PIX_FMT_D3D12,
+    // so resolveFrameColor cannot infer NV12/P010 from frame->format. HDR
+    // hardware surfaces are P010 by contract; SDR surfaces are NV12. Software
+    // AV1/ProRes paths retain the exact planar format mapping above.
+    if (frame->format == AV_PIX_FMT_D3D12 && out.colorInfo.pixelFormat == pipeline::SourcePixelFormat::Unknown) {
+        out.colorInfo.pixelFormat = out.colorInfo.isHdrPath()
+            ? pipeline::SourcePixelFormat::P010 : pipeline::SourcePixelFormat::NV12;
+    }
+    info_.color = out.colorInfo;
+    if (frame->format == AV_PIX_FMT_D3D12) {
+        info_.videoPixelFormatName = out.colorInfo.pixelFormat == pipeline::SourcePixelFormat::P010 ? "p010(d3d12)" : "nv12(d3d12)";
+    } else if (const auto* name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format))) {
+        info_.videoPixelFormatName = name;
+    }
+    if (framesRead_ == 0) {
+        veyra::log::info("source-file", std::format(
+            "first-frame codec={} format={} hw={} hdr={} matrix={} transfer={} range={} chromaLocation={}",
+            info_.videoCodecName, info_.videoPixelFormatName, decoder_.hardwareActive(), out.colorInfo.isHdrPath(),
+            static_cast<int>(out.colorInfo.matrix), static_cast<int>(out.colorInfo.transfer),
+            static_cast<int>(out.colorInfo.range), static_cast<int>(out.colorInfo.chromaLocation)));
+    }
     out.sourceEpoch = epoch_;
 
     uint32_t flags = 0;
@@ -269,6 +346,8 @@ void MediaFileSource::close() noexcept
     decoder_.close();
     demuxer_.close();
     info_ = SourceInfo{};
+    path_.clear();
+    preferHardwareDecode_ = false;
 }
 
 } // namespace veyra::source
