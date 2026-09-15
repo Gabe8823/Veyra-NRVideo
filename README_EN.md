@@ -16,6 +16,14 @@ A Windows video player and capture-card enhancement tool. Play videos, process i
 
 [Download 1.2.0 Portable](https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.2.0) · [Release Notes](docs/RELEASE_NOTES_1.2.0.md) · [Report an Issue](https://github.com/Likely7/Veyra-NRVideo/issues)
 
+## Development Status (2026-09-15)
+
+Local `main` includes repair commit `dc44c48`. The download above is still the **1.2.0 release package**; it does not contain the subsequent AV1/MOV, capture-audio device selection, live frame-generation clock, or latest audio-continuity repairs. Those changes are currently local source and test-build changes, not pushed or released.
+
+- Confirmed audio defects in resampler history, float headroom and empty-pull recovery have been addressed; the processing that muffled audio was withdrawn. **The reported fire/whistle hiss has not passed real listening acceptance and is not claimed resolved.**
+- Media improvements have sample evidence for AV1 MP4 and ProRes MOV, not every codec/container combination. AV1 / ProRes export remains unsupported.
+- See the [local integration status](docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md) for included repairs, verification limits and the candidate executable. Keep released capabilities separate from unreleased fixes.
+
 ## Features
 
 | Feature | Options |

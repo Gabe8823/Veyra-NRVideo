@@ -2119,3 +2119,9 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 合并前重新执行 `cmd.exe /c out\build\veyra-build-x64-release.cmd`：exit0，配置生成成功，ninja no work to do；保留RemotePlay ON与patched FFmpeg/dav1d路径。裸 `cmake --version` 因当前PATH未配置失败，改用已有脚本中的VS CMake绝对路径，实际版本3.31.6-msvc6；可选依赖与CMake策略警告不影响构建。`out/build/audio-continuity-repair-20260915/veyra_audio_waveform_tests.exe --offline`：exit0，checks=47 failures=0，输出位于本任务命令记录；前轮完整日志继续保留在 `logs/audio-continuity-repair-20260915/final/`，不冒充本轮重新执行。EXE hash仍为F26C655D…D1D552。`git diff --check` 无空白错误，仅已有CRLF转换提示。
 
 仅将审查过的源码、文档及脚本加入暂存；EXE、运行组件、日志与测试媒体仍被忽略且保留，不以删除本地文件制造干净工作区。当前验收目标是本地main包含修复提交、Git未提交/未跟踪状态为空；不改变真实沙沙声尚未听感验收的结论。本轮未执行RTX Create/Evaluate、GPU delivery或实卡测试，未重新跑120秒漂移用例。下一步仍是取得真实问题场景同源波形证据，用户当前远程不便测试，不要求立即验收。
+
+## 2026-09-15 合并后项目文档同步
+
+本地快进合并已完成，代码基线 `dc44c48`，合并后工作区干净。用户要求更新项目文档；本轮更新中英文README开发状态、`docs/BUILD.md`候选构建与专项命令，新增 `docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md` 汇总分支、提交、已发布/未发布边界、候选身份与测试证据。未修改历史1.2.0发布说明、版本号、代码或运行组件。音频沙沙声仍未听感验收、生产链完整分段tap尚未实现，均明确保留，不将旧cubic/AGC施工记录误报为成功修复。
+
+检查：PowerShell扫描上述4份文档的Markdown本地文件链接，全部目标存在（不校验外部URL或页内锚点）；`git diff --check`通过，仅既存CRLF提示。新增文档引用的构建与DSP/端点/漂移结果均标明为前轮证据，本轮未重新构建或运行音频/GPU/实卡测试，未执行RTX Create/Evaluate。文档在本地main提交以保持用户要求的干净工作区，不push、不发布；下一步仍为真实问题场景同源PCM定位，用户远程期间不要求立即测试。

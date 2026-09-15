@@ -2,6 +2,22 @@
 
 普通用户下载Release免安装包即可。以下用于开发者构建，不需要把SDK提交到Git。
 
+## Current local candidate / 当前本地候选（2026-09-15）
+
+The integrated source baseline is `dc44c48` on local `main`, not a new release. See [integration status](LOCAL_INTEGRATION_STATUS_2026-09-15.md). The existing verified candidate is `out/build/audio-continuity-repair-20260915/veyra.exe`, built with RemotePlay **ON** and `C:/veyra-deps/ffmpeg-ps5-dav1d-installed` (PS5 slice patch retained, dav1d enabled). Full machine-specific build arguments are recorded in [audio repair §6](CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md#6-用户要求先修已知缺陷后的实施2026-09-15).
+
+Do not use the reduced default build below as proof of full-player equivalence, or package this newer source as the unchanged 1.2.0 release. A future release needs explicit authorization and a matching dependency/source audit, including dav1d. Historical release build instructions and component identities below remain unchanged.
+
+Targeted audio verification from the repository root:
+
+```powershell
+& ./out/build/audio-continuity-repair-20260915/veyra_audio_waveform_tests.exe --offline
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/audio-continuity-local-check
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/audio-continuity-local-check -DriftOnly
+```
+
+The first command is offline DSP only. The script additionally uses the real Windows audio endpoint with muted synthetic tests; each drift case runs for 120 seconds. Neither proves capture-card listening quality or replaces GPU / export verification. Do not run endpoint suites concurrently.
+
 ## Requirements
 
 - Windows 11 x64, Visual Studio 2022 C++ tools, Windows SDK, CMake 3.24+, Ninja.
