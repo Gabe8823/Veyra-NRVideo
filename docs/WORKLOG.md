@@ -2285,3 +2285,10 @@ HDR修改ColorMetadata/FramePacket/MediaFileSource静态元数据继承，HdrTon
 修后同参数32秒 `logs/fg-progressive-capture-20260915.log` exit0：生成3478、提交3478、过期0、显示提交180fps；120秒持续采集 `logs/fg-progressive-capture-long-20260915.log` exit0：源7062、生成14050、提交14050、过期0、显示提交180fps，`failed=false`，无错误。既有 `veyra_presentation_worker_tests.exe`、`veyra_live_timing_tests.exe` 回归exit0，日志 `logs/fg-progressive-worker-tests-20260915.log`、`logs/fg-progressive-timing-tests-20260915.log`；新增逐帧行为由实卡对照验证。最终delivery exit0，结果 `logs/delivery/90feb52b7ed84cf19d92d64596d79f10/result.json`，47.91秒；未发布。
 
 最终候选SHA256 `02BBC51FF46A8DEBCCA9961BEC48500E2AA77FE62B238174172D4E238ACA6401`，入口沿用 `out/start-user-issues-candidate.cmd`。详细文件/命令/SDK结果及边界见FG_OUTPUT_RATE_AUDIT。回调至Present返回P95前后44.606/50.328ms，不能从丢帧改善推论屏幕延迟降低；真实屏幕与帧间均匀性尚未测量，下一步交用户同一组合游玩验收。HDR改动一同保留为本地可回退记录，运行库/SDK/媒体未入Git。
+## 2026-09-15 1.3.0发布后文档对齐
+
+用户要求更新长期未维护的文档。审计发现 README/README_EN 已指向1.3.0，但 `docs/BUILD.md` 仍有1.2.0构建、打包和PS5标题，`docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md` 仍把1.2.0写成当前未发布版本。
+
+已更新：构建依赖与便携打包命令改为1.3.0，补充dav1d/RemotePlay对应说明；本地整合状态新增当前1.3.0发布、main/tag和远端资产核验，并把dc44c48候选、未发布结论和待办明确标为历史快照。没有改动运行时代码、SDK、DLL、版本标签或发布资产。
+
+验证：`git diff --check`通过（仅换行格式提示）；随后提交文档并推送`nrvideo/main`。本次不重新构建、不替换便携包，功能与硬件验收边界继续以`docs/RELEASE_NOTES_1.3.0.md`为准。

@@ -33,8 +33,8 @@ WASAPI input-specific checks:
 ## Requirements
 
 - Windows 11 x64, Visual Studio 2022 C++ tools, Windows SDK, CMake 3.24+, Ninja.
-- Local FFmpeg development libraries matching avcodec63 / avformat63 / avutil61 / swresample7 / swscale10. Release 1.2.0 uses the LGPL vcpkg FFmpeg 9.0.1#1 build with the Veyra H.264 slice-capacity patch.
-- The PS5 H.264 repair shipped in 1.2.0 requires the additional [slice-capacity patch and matching rebuild](../scripts/ffmpeg/README.md). Stock 9.0.1 D3D12 H.264 has a 32-slice limit; the tested PS5 stream uses 68. Preserve `veyra-local-build.json` alongside the original vcpkg provenance in corresponding-source packages. Older 0.0.5 assets remain unchanged.
+- Local FFmpeg development libraries matching avcodec63 / avformat63 / avutil61 / swresample7 / swscale10. Release 1.3.0 uses the LGPL vcpkg FFmpeg 9.0.1#1 build with dav1d enabled and the Veyra H.264 slice-capacity patch.
+- The PS5 H.264 repair retained in 1.3.0 requires the additional [slice-capacity patch and matching rebuild](../scripts/ffmpeg/README.md). Stock 9.0.1 D3D12 H.264 has a 32-slice limit; the tested PS5 stream uses 68. Preserve `veyra-local-build.json` alongside the original vcpkg provenance in corresponding-source packages. Older release assets remain unchanged.
 - NVIDIA DLSS SDK 310.7.0, Optical Flow SDK 5.0.7, RTX Video SDK 1.1.0, and nv-codec-headers. Prepare these under their respective licenses in ignored local directories.
 - Intel XeSS SDK 3.0.2 for the XeSS presenter; AMD FidelityFX SDK 1.1.4 optical-flow/backend static libraries for the AMD flow option.
 - Local NR runtime and NGX project configuration for experimental NR. The source repository intentionally does not contain them.
@@ -82,16 +82,16 @@ Veyra and FidelityFX code are compiled into the executable; FFmpeg is dynamicall
 Run targeted tests and `scripts/gates/delivery.ps1`; each individual test must stay below300seconds. Physical capture and screen scanout require separate hardware verification. The legacy Loop gate is not part of the current process.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1 -Root . -Version 1.2.0 -OutputDirectory out/releases/1.2.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1 -Root . -Version 1.3.0 -BuildDirectory out/build/audio-continuity-repair-20260915 -OutputDirectory out/releases/1.3.0-final
 ```
 
 The packager accepts `-BuildDirectory` for an isolated build, checks the publisher's fixed input files, copies an explicit payload, and emits a ZIP, checksums, and component manifests. It refuses to overwrite an existing candidate. This build-time audit does not restrict user DLL replacement. Do not upload SDK headers, samples, libraries, private media, logs, or development archives with the source.
 
-## PS5 in 1.2.0
+## PS5 in 1.3.0
 
-The release enables Remote Play; the default non-RemotePlay command above is a reduced build. Follow [REMOTEPLAY_BUILD_1.2.0.md](REMOTEPLAY_BUILD_1.2.0.md) for the full build, dependency source, patches and licensing.
+The release enables Remote Play; the default non-RemotePlay command above is a reduced build. Follow [REMOTEPLAY_BUILD_1.3.0.md](REMOTEPLAY_BUILD_1.3.0.md) for the full build, dependency source, patches and licensing. The published package also includes the matching FFmpeg/dav1d source asset.
 
-## GPU DIS (1.2.0 experimental option)
+## GPU DIS (1.3.0 experimental option)
 
 The open-source subset in `third_party/gpu-dis` compiles with the existing Windows
 SDK DXC; no additional GPU vendor SDK is required for DIS. `cmake/VeyraGpuDis.cmake`
