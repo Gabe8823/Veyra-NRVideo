@@ -416,6 +416,7 @@ if(VEYRA_FFMPEG_ROOT AND EXISTS "${VEYRA_FFMPEG_ROOT}/include/libavformat/avform
     src/source/NativeCaptureSink.cpp
     src/source/MediaFileSource.cpp
     src/source/CaptureCardSource.cpp
+    src/source/WasapiAudioInput.cpp
   )
   veyra_apply_warnings(veyra_sources)
   target_compile_options(veyra_sources PRIVATE /WX-)
@@ -447,6 +448,10 @@ if(VEYRA_FFMPEG_ROOT AND EXISTS "${VEYRA_FFMPEG_ROOT}/include/libavformat/avform
   target_link_libraries(veyra_source_tests PRIVATE veyra_sources)
 
   add_executable(veyra_capture_tests tests/integration/CaptureSourceTests.cpp)
+  add_executable(veyra_wasapi_input_tests tests/integration/WasapiInputTests.cpp)
+  target_compile_features(veyra_wasapi_input_tests PRIVATE cxx_std_20)
+  target_compile_definitions(veyra_wasapi_input_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(veyra_wasapi_input_tests PRIVATE veyra_sources)
   target_compile_features(veyra_capture_tests PRIVATE cxx_std_20)
   target_compile_definitions(veyra_capture_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(veyra_capture_tests PRIVATE veyra_sources)

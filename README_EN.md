@@ -22,6 +22,7 @@ Local `main` includes repair commit `dc44c48`. The download above is still the *
 
 - Confirmed audio defects in resampler history, float headroom and empty-pull recovery have been addressed; the processing that muffled audio was withdrawn. **The reported fire/whistle hiss has not passed real listening acceptance and is not claimed resolved.**
 - Media improvements have sample evidence for AV1 MP4 and ProRes MOV, not every codec/container combination. AV1 / ProRes export remains unsupported.
+- Capture audio can now be selected as DirectShow audio or an explicit WASAPI recording endpoint. WASAPI uses shared mode, a stable endpoint ID, and the existing PCM audio path; it never auto-selects a microphone or performs system loopback.
 - See the [local integration status](docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md) for included repairs, verification limits and the candidate executable. Keep released capabilities separate from unreleased fixes.
 
 ## Features
@@ -76,8 +77,9 @@ Choose Open on the bottom bar. Playback, seeking, volume, subtitles, and fullscr
 
 1. Connect the device and close other applications using the same capture card.
 2. Choose Capture, then select the device, resolution, frame rate, pixel format, and audio input.
-3. Confirm the picture with enhancement disabled, then enable NR, upscaling, or frame generation. Try YUY2 / NV12 when the device offers the same desired mode.
-4. For a 30fps console game carried over 60fps capture, select the 60-to-30 content cadence setting in Professional mode. Keep the original cadence for actual 60fps content.
+3. In Audio monitoring, choose a `[DirectShow]` device or an explicit `[WASAPI]` endpoint; the default is no audio monitoring. WASAPI stores the Windows endpoint ID and connects only to the selected input; it does not fall back to a microphone or system loopback.
+4. Confirm the picture with enhancement disabled, then enable NR, upscaling, or frame generation. Try YUY2 / NV12 when the device offers the same desired mode.
+5. For a 30fps console game carried over 60fps capture, select the 60-to-30 content cadence setting in Professional mode. Keep the original cadence for actual 60fps content.
 
 ### Enhancement and Frame Generation
 

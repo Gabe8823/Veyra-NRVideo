@@ -2125,3 +2125,22 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 本地快进合并已完成，代码基线 `dc44c48`，合并后工作区干净。用户要求更新项目文档；本轮更新中英文README开发状态、`docs/BUILD.md`候选构建与专项命令，新增 `docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md` 汇总分支、提交、已发布/未发布边界、候选身份与测试证据。未修改历史1.2.0发布说明、版本号、代码或运行组件。音频沙沙声仍未听感验收、生产链完整分段tap尚未实现，均明确保留，不将旧cubic/AGC施工记录误报为成功修复。
 
 检查：PowerShell扫描上述4份文档的Markdown本地文件链接，全部目标存在（不校验外部URL或页内锚点）；`git diff --check`通过，仅既存CRLF提示。新增文档引用的构建与DSP/端点/漂移结果均标明为前轮证据，本轮未重新构建或运行音频/GPU/实卡测试，未执行RTX Create/Evaluate。文档在本地main提交以保持用户要求的干净工作区，不push、不发布；下一步仍为真实问题场景同源PCM定位，用户远程期间不要求立即测试。
+
+## 2026-09-15 用户授权加入WASAPI采集输入
+
+用户要求把WASAPI加入采集卡音频选择。实现保持DirectShow视频路径和已有视频filter内置音频/独立DirectShow音频不变，在采集面板的同一音频列表新增 `[WASAPI]` 端点。枚举Windows活动 `eCapture` 端点，使用FriendlyName展示、endpoint ID稳定保存；默认仍为“不监听音频”，不调用默认端点、不做loopback、不自动切到麦克风。
+
+WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer` 返回的设备位置和QPC时间将PCM转换到进程steady-clock轴；静音包按帧数补零，坏时间戳继续连续帧时间线并记估计，设备位置跳变/数据断点触发音频epoch reset。PCM进入既有 `CaptureAudioSession`，复用采样率、声道、重采样、音量、补偿和输出。设备失效只重试原endpoint三次，停止可中断等待；失败保留视频并写HRESULT，不回退默认设备。
+
+连接串：稳定 `capture2:` 的音频模式 `-3` 加编码endpoint ID；旧 `capture:`、内置音频和DirectShow独立音频保持兼容。新增 `WasapiAudioInput.h/.cpp`、WASAPI输入测试和 `CaptureSourceTests --wasapi`；UI标签及 `--list`输出注明来源。计划/边界见 `docs/WASAPI_CAPTURE_INPUT_PLAN_2026-09-15.md`。
+
+实际验证：
+
+- `cmd.exe /c out\build\veyra-build-x64-release.cmd`：最终exit0，`[30/30] Linking CXX executable veyra.exe`。首次因Windows `cguid.h`包含顺序失败（C2059 `__uuidof`），调整头文件顺序后重建通过；失败日志保留。
+- `veyra_wasapi_input_tests.exe --offline`：最终连接串、QPC时间轴、坏时间戳、静音/异常包等 **18项**通过。
+- `veyra_wasapi_input_tests.exe --invalid`：无效endpoint不回退、重试上限3次、停止打断退避，exit0。
+- 本机显式USB3 Digital Audio endpoint 3秒输入：共享48kHz/32-bit float，超过20个PCM块，停止/重开通过；日志/输出在 `logs/wasapi-input-20260915/`。注入设备失效后只重连同endpoint的测试通过。
+- `veyra_capture_tests.exe --wasapi <本机显式endpoint ID>`：视频+WASAPI音频组合通过；同一设备的原DirectShow路径也通过。测试增益为0且不保存PCM，不能替代用户听感。
+- 旧 `test-audio-continuity.ps1` 12组音频专项此前已通过；本轮补充脚本中的WASAPI离线时钟项，未重复声学/GPU验收。
+
+候选仍是本地 `out/build/audio-continuity-repair-20260915/veyra.exe`，未更新版本号、未修改运行组件、未push、未发布。WASAPI接入已具备本机候选证据，但反馈者设备的端点是否提供正确采集音频、以及火堆/口哨沙沙声是否改善，均未验收。

@@ -12,11 +12,23 @@ Targeted audio verification from the repository root:
 
 ```powershell
 & ./out/build/audio-continuity-repair-20260915/veyra_audio_waveform_tests.exe --offline
+& ./out/build/audio-continuity-repair-20260915/veyra_wasapi_input_tests.exe --offline
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/audio-continuity-local-check
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/audio-continuity-local-check -DriftOnly
 ```
 
-The first command is offline DSP only. The script additionally uses the real Windows audio endpoint with muted synthetic tests; each drift case runs for 120 seconds. Neither proves capture-card listening quality or replaces GPU / export verification. Do not run endpoint suites concurrently.
+The first two commands are offline DSP/timebase checks. The script additionally uses the real Windows audio endpoint with muted synthetic tests; each drift case runs for 120 seconds. Neither proves capture-card listening quality or replaces GPU / export verification. Do not run endpoint suites concurrently.
+
+WASAPI input-specific checks:
+
+```powershell
+& ./out/build/audio-continuity-repair-20260915/veyra_wasapi_input_tests.exe --list
+& ./out/build/audio-continuity-repair-20260915/veyra_wasapi_input_tests.exe --invalid
+& ./scripts/run-short-test.ps1 -Exe out/build/audio-continuity-repair-20260915/veyra_wasapi_input_tests.exe -Arguments @('--endpoint','<explicit endpoint ID>') -TimeoutSeconds 20 -LogPrefix logs/wasapi-input-20260915/endpoint
+& ./scripts/run-short-test.ps1 -Exe out/build/audio-continuity-repair-20260915/veyra_capture_tests.exe -Arguments @('--wasapi','<explicit endpoint ID>') -TimeoutSeconds 20 -LogPrefix logs/wasapi-input-20260915/video-wasapi
+```
+
+`--endpoint` and `--wasapi` require a user-selected active recording endpoint ID from `--list`; the placeholder must not be replaced with a default device. These tests use muted input/output and do not save PCM. A successful local endpoint test proves enumeration, PCM delivery and lifecycle only; it does not prove the reported hiss is gone.
 
 ## Requirements
 

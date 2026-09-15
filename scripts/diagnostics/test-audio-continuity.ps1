@@ -10,6 +10,7 @@ $audioLogs=[IO.Path]::GetFullPath($LogDirectory)
 [IO.Directory]::CreateDirectory($audioLogs) | Out-Null
 $cases=@(
     @{Name='waveform';Exe='veyra_audio_waveform_tests.exe';Args=@('--offline');Seconds=30},
+    @{Name='wasapi-clock';Exe='veyra_wasapi_input_tests.exe';Args=@('--offline');Seconds=30},
     @{Name='queued-empty-pull';Exe='veyra_audio_waveform_tests.exe';Args=@('--endpoint');Seconds=30},
     @{Name='true-endpoint-gap';Exe='veyra_audio_waveform_tests.exe';Args=@('--endpoint-gap');Seconds=30},
     @{Name='capture-baseline';Exe='veyra_capture_audio_tests.exe';Args=@('--baseline');Seconds=90},

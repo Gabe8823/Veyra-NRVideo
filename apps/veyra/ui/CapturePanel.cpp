@@ -16,7 +16,7 @@ void rebuildAudioList(HWND h,int device){
     SendDlgItemMessageW(h,3,CB_RESETCONTENT,0,0);SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(L"不监听音频"));
     const bool videoSelected=device>=0&&size_t(device)<videoDevices.size();
     if(videoSelected)SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(videoDevices[size_t(device)].hasEmbeddedAudio?L"使用视频设备内置音频（已检测）":L"尝试视频设备内置音频"));
-    for(auto& audio:audioDevices)SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(audio.name.c_str()));
+    for(auto& audio:audioDevices){const auto label=std::format(L"[{}] {}",audio.wasapi?L"WASAPI":L"DirectShow",audio.name);SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(label.c_str()));}
     SendDlgItemMessageW(h,3,CB_SETCURSEL,0,0);
 }
 int selectedAudio(HWND h,int device){
@@ -37,7 +37,7 @@ case WM_CREATE:{window=h;font=makeFont(h);titleTheme(h);auto add=[&](const wchar
     for(auto name:{L"自动识别 SDR / HDR · 设备元数据",L"手动 HDR10 / PQ · BT.2020",L"手动 HLG · BT.2020 / 1000nit参考"})SendDlgItemMessageW(h,10,CB_ADDSTRING,0,LPARAM(name));SendDlgItemMessageW(h,10,CB_SETCURSEL,0,0);
     add(L"BUTTON",L"转为 SDR 显示（所有预览，立即生效）",12,BS_AUTOCHECKBOX|WS_TABSTOP);SendDlgItemMessageW(h,12,BM_SETCHECK,readSdr()?BST_CHECKED:BST_UNCHECKED,0);
     add(L"BUTTON",L"连接并开始观看",4,BS_PUSHBUTTON|WS_TABSTOP);marked(GetDlgItem(h,4));add(L"BUTTON",L"刷新设备",5,BS_PUSHBUTTON|WS_TABSTOP);
-    add(L"STATIC",L"视频输入设备",6,0);add(L"STATIC",L"设备实际支持的格式",7,0);add(L"STATIC",L"",8,0);add(L"STATIC",L"HDMI 音频监听",9,0);
+    add(L"STATIC",L"视频输入设备",6,0);add(L"STATIC",L"设备实际支持的格式",7,0);add(L"STATIC",L"",8,0);add(L"STATIC",L"音频监听（仅采集所选输入，默认关闭）",9,0);
     installDialogHelp(h,{{12,L"收到HDR也转成SDR显示，不用改PS5或Windows。增强照常用；只改预览，视频导出不受影响。切换会短暂停顿，截图跟随当前画面。关闭后跟随显示器。"},{10,L"设备没报HDR信息时手动指定，需选P010/P016。P010也可能装SDR，别给普通画面强戴HDR帽子。"},{1,L"选采集卡的视频设备。别把摄像头误请来直播PS5。"},{2,L"选设备真实提供的分辨率、帧率和像素格式。清晰度、带宽和延迟都受它影响。"},{3,L"如果设备自带 HDMI 音频，会显示“使用视频设备内置音频”；否则选择独立音频设备，也可不采声音。"},{4,L"按当前格式连接采集卡，并应用当前增强设置。"},{5,L"重新扫描设备和格式。设备被其他软件占用时，刷新不一定能抢回来。"}});
     EnableWindow(GetDlgItem(h,4),FALSE);arrange();SetTimer(h,1,100,nullptr);if(!busy)query(-1);return 0;}
 case WM_TIMER:

@@ -14,9 +14,11 @@ struct CaptureDevice {
     // Only populated for video devices: the selected video filter exposes an
     // audio output pin that can be used without a second audio filter.
     bool hasEmbeddedAudio=false;
+    bool wasapi=false; // Audio only: path is a Windows recording endpoint ID.
 };
 constexpr int kCaptureAudioDisabled=-1;
 constexpr int kCaptureAudioFromVideoDevice=-2;
+constexpr int kCaptureAudioWasapi=-3; // capture2 only; requires explicit endpoint ID
 struct CaptureMetrics {
     uint64_t received=0, delivered=0, dropped=0;
     double callbackFps=0, readAgeMs=0, frameAgeMs=0;

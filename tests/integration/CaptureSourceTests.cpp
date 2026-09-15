@@ -6,6 +6,7 @@
 #include <thread>
 #include <cstdio>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 extern "C" {
 #include <libavutil/frame.h>
@@ -15,12 +16,20 @@ int wmain(int argc,wchar_t** argv){
     if(argc==2&&wcscmp(argv[1],L"--list")==0){
         CoInitializeEx(nullptr,COINIT_MULTITHREADED);auto videos=veyra::source::CaptureCardSource::deviceDetails();auto audios=veyra::source::CaptureCardSource::deviceDetails(true);
         for(unsigned d=0;d<videos.size();++d){wprintf(L"VIDEO %u %ls embeddedAudio=%d path=%ls\n",d,videos[d].name.c_str(),videos[d].hasEmbeddedAudio?1:0,videos[d].path.c_str());const auto formats=videos[d].path.empty()?veyra::source::CaptureCardSource::formats(d):veyra::source::CaptureCardSource::formatsByPath(videos[d].path);for(const auto& f:formats)wprintf(L"FORMAT %u:%d %ls\n",d,f.index,f.label.c_str());}
-        for(unsigned a=0;a<audios.size();++a)wprintf(L"AUDIO %u %ls path=%ls\n",a,audios[a].name.c_str(),audios[a].path.c_str());
+        for(unsigned a=0;a<audios.size();++a)wprintf(L"AUDIO %u [%ls] %ls path=%ls\n",a,audios[a].wasapi?L"WASAPI":L"DirectShow",audios[a].name.c_str(),audios[a].path.c_str());
         CoUninitialize();return videos.empty()?1:0;
     }
-    if(argc!=2){printf("Specify capture:device:format:audio; real hardware required\n");return 2;}
+    const bool wasapiTest=argc==3&&wcscmp(argv[1],L"--wasapi")==0;
+    if(argc!=2&&!wasapiTest){printf("Specify capture:device:format:audio or --wasapi <explicit endpoint ID>; real hardware required\n");return 2;}
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     veyra::source::CaptureCardSource source;veyra::source::SourceOpenDesc d;d.path=argv[1];
+    if(wasapiTest){
+        const auto videos=veyra::source::CaptureCardSource::deviceDetails();
+        const auto video=std::find_if(videos.begin(),videos.end(),[](const auto& v){return v.name==L"USB3 Video";});
+        if(video==videos.end()){printf("FAIL explicit USB3 Video fixture unavailable\n");return 3;}
+        const veyra::source::CaptureDevice audio{L"Explicit WASAPI test",argv[2],false,true};
+        d.path=veyra::source::CaptureCardSource::makeCapturePath(unsigned(video-videos.begin()),*video,0,0,&audio);
+    }
     int failures=0;auto check=[&](bool ok,const char* label){printf("%s %s\n",ok?"PASS":"FAIL",label);if(!ok)++failures;};
     if(!source.configure(d)){printf("FAIL configure\n");return 3;}
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -32,10 +41,10 @@ int wmain(int argc,wchar_t** argv){
     // This source-only test has no presenter to provide video host/PTS
     // anchors. Use the explicit audio-clock mode so the renderer remains
     // running while the test validates actual audio callbacks.
-    source.setAudioSync(2,0);
+    source.setAudioSync(wasapiTest?0:2,0);
     const AVFrame* frame=nullptr;veyra::pipeline::FramePacket packet;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
-    auto readFrame=[&](){while(std::chrono::steady_clock::now()<deadline){auto r=source.read(packet,&frame);if(r==veyra::source::SourceReadStatus::Frame)return true;if(r==veyra::source::SourceReadStatus::Error)return false;}return false;};
+    auto readFrame=[&](){while(std::chrono::steady_clock::now()<deadline){auto r=source.read(packet,&frame);if(r==veyra::source::SourceReadStatus::Frame){if(wasapiTest)source.videoPresented(packet.pts.toDouble()*1000,std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()/100);return true;}if(r==veyra::source::SourceReadStatus::Error)return false;}return false;};
     if(!readFrame()){printf("FAIL first frame\n");return 5;}
     const auto initialPts=packet.pts.toDouble();const auto initialReceived=source.metrics().received;
     const int rowBytes=av_image_get_linesize(AVPixelFormat(frame->format),frame->width,0);
@@ -48,11 +57,16 @@ int wmain(int argc,wchar_t** argv){
     deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     check(readFrame(),"read after consumer stall");
     auto recovered=source.metrics();
+    const bool recoveryDrop=veyra::pipeline::hasFrameFlag(packet.flags,veyra::pipeline::FrameFlagBits::Drop);
+    if(wasapiTest){
+        const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        while(std::chrono::steady_clock::now()<until){deadline=until;if(!readFrame())break;}
+    }
     const auto audio=source.audioState();
     check(audio.running&&audio.error.empty()&&audio.inputSampleRate==48000&&audio.inputBlocks>=20,
         "real capture-card audio renderer runs at selected 48 kHz format");
     check(packet.pts.toDouble()>initialPts+.15,"read skips stale frames rather than draining FIFO");
-    check(veyra::pipeline::hasFrameFlag(packet.flags,veyra::pipeline::FrameFlagBits::Drop),"drop invalidates temporal history");
+    check(recoveryDrop,"drop invalidates temporal history");
     check(recovered.readAgeMs<100,"latest frame callback age below 100ms");
     printf("received=%llu dropped=%llu callbackFps=%.3f readAgeMs=%.3f\n",recovered.received,recovered.dropped,recovered.callbackFps,recovered.readAgeMs);
     printf("audioBlocks=%llu format=%uHz/%ubit validBits=%u underruns=%llu underrunFrames=%llu peak=%.5f resets=%llu\n",

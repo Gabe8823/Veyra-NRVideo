@@ -1,4 +1,6 @@
 #include "veyra/source/CaptureCardSource.h"
+#include "veyra/source/WasapiAudioInput.h"
+#include "veyra/sink/ArrivalClockMapping.h"
 #include "veyra/source/CaptureTiming.h"
 #include "veyra/source/CaptureMediaType.h"
 #include "veyra/source/NativeCaptureSink.h"
@@ -101,8 +103,8 @@ bool parseCapturePath(std::wstring_view path,CaptureSelection& selection){
         std::array<std::wstring_view,5> fields{};size_t cursor=prefix.size();
         for(size_t i=0;i<fields.size();++i){const size_t end=path.find(L':',cursor);if(i+1<fields.size()){if(end==std::wstring_view::npos)return false;fields[i]=path.substr(cursor,end-cursor);cursor=end+1;}else{if(end!=std::wstring_view::npos)return false;fields[i]=path.substr(cursor);}}
         if(fields[0].empty()||!decodePath(fields[0],selection.videoPath)||!parseInt(fields[1],selection.format)||!parseInt(fields[2],selection.audio)||!decodePath(fields[3],selection.audioPath)||!parseUnsigned(fields[4],selection.colorOverride)||selection.format<0||selection.colorOverride>2)return false;
-        if(selection.audio!=kCaptureAudioDisabled&&selection.audio!=kCaptureAudioFromVideoDevice&&selection.audio<0)return false;
-        if(selection.audio>=0&&selection.audioPath.empty())return false;selection.stable=true;return true;
+        if(selection.audio!=kCaptureAudioDisabled&&selection.audio!=kCaptureAudioFromVideoDevice&&selection.audio!=kCaptureAudioWasapi&&selection.audio<0)return false;
+        if((selection.audio>=0||selection.audio==kCaptureAudioWasapi)&&selection.audioPath.empty())return false;selection.stable=true;return true;
     }
     unsigned videoIndex=0,colorOverride=0;int format=0,audio=kCaptureAudioDisabled;const std::wstring legacy(path);
     const int fields=swscanf_s(legacy.c_str(),L"capture:%u:%d:%d:%u",&videoIndex,&format,&audio,&colorOverride);
@@ -124,6 +126,8 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
     float lastAudioGain=-1;bool audioGainSupported=false;
     ComPtr<IBaseFilter> audioSink;ComPtr<IReferenceClock> referenceClock;
     std::unique_ptr<sink::CaptureAudioSession> audioSession;
+    std::unique_ptr<WasapiAudioInput> wasapi;
+    sink::ArrivalClockMapping videoIngressClock;double videoIngressMs=0;bool haveVideoIngress=false;
     std::wstring audioError;
     SourceInfo info;CaptureMediaLayout layout;Clock::time_point lastFrame;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** pp)override{if(!pp)return E_POINTER;*pp=nullptr;if(id==IID_IUnknown||id==__uuidof(ISampleGrabberCB)){*pp=static_cast<ISampleGrabberCB*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
@@ -147,6 +151,11 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
                 pendingDiscontinuity=captureDiscontinuity(pending,pendingDiscontinuity,
                     sample->IsDiscontinuity()==S_OK,received>0,pendingTime,time,info.averageFps);
                 pending=true;pendingTime=time;pendingArrival=arrival;
+                if(wasapi){
+                    if(sample->IsDiscontinuity()==S_OK)videoIngressClock.reset();
+                    videoIngressMs=videoIngressClock.observe(std::chrono::duration<double,std::milli>(arrival.time_since_epoch()).count(),time*1000);
+                    haveVideoIngress=true;
+                }
                 pendingDuration=captureDuration(sampleStart,sampleEnd,sampleTime,nominalDuration100ns);
                 if(!received)firstArrival=arrival;
                 ++received;latestArrival=arrival;
@@ -169,10 +178,15 @@ std::vector<CaptureDevice> CaptureCardSource::deviceDetails(bool audio){
         }
         result.push_back(std::move(device));
     }
+    if(audio)for(auto& endpoint:WasapiAudioInput::devices())result.push_back({std::move(endpoint.name),std::move(endpoint.id),false,true});
     return result;
 }
 std::vector<std::wstring> CaptureCardSource::devices(bool audio){std::vector<std::wstring> result;for(auto& device:deviceDetails(audio))result.push_back(std::move(device.name));return result;}
 std::wstring CaptureCardSource::makeCapturePath(unsigned videoIndex,const CaptureDevice& video,int format,int audioMode,const CaptureDevice* audio,unsigned colorOverride){
+    if(audio&&audio->wasapi){
+        if(video.path.empty()||audio->path.empty())return {};
+        return std::format(L"capture2:{}:{}:{}:{}:{}",encodePath(video.path),format,kCaptureAudioWasapi,encodePath(audio->path),colorOverride);
+    }
     if(video.path.empty()||(audioMode>=0&&(!audio||audio->path.empty())))return std::format(L"capture:{}:{}:{}:{}",videoIndex,format,audioMode,colorOverride);
     return std::format(L"capture2:{}:{}:{}:{}:{}",encodePath(video.path),format,audioMode,audioMode>=0?encodePath(audio->path):L"",colorOverride);
 }
@@ -198,16 +212,20 @@ std::vector<CaptureFormat> CaptureCardSource::formats(unsigned device){ComPtr<IG
 std::vector<CaptureFormat> CaptureCardSource::formatsByPath(std::wstring_view devicePath){ComPtr<IGraphBuilder> g;ComPtr<ICaptureGraphBuilder2>b;ComPtr<IBaseFilter>f;ComPtr<IAMStreamConfig>c;if(!configuration(devicePath,g,b,f,c))return {};return enumerateFormats(c.Get());}
 const SourceInfo& CaptureCardSource::info()const{return p_->info;}
 bool CaptureCardSource::setAudioGain(float gain){
+    if(p_->wasapi){p_->wasapi->setGain(gain);return p_->wasapi->snapshot().available;}
     auto& p=*p_;if(p.audioSession){p.audioSession->setGain(gain);return p.audioSession->snapshot().available;}if(!p.graph||!p.audioFilter)return false;
     if(gain==p.lastAudioGain)return p.audioGainSupported;
     ComPtr<IBasicAudio> audio;HRESULT hr=p.graph.As(&audio);
     if(SUCCEEDED(hr)){long attenuation=gain<=0?-10000:long(std::clamp(2000.0*std::log10(double(gain)),-10000.0,0.0));hr=audio->put_Volume(attenuation);}
     p.lastAudioGain=gain;p.audioGainSupported=SUCCEEDED(hr);log::info("capture-audio",std::format("application gain={} hr=0x{:X}",gain,unsigned(hr)));return p.audioGainSupported;
 }
-void CaptureCardSource::videoPresented(double pts,int64_t time){if(p_->audioSession)p_->audioSession->videoPresented(pts,time);}
-void CaptureCardSource::videoReset(bool resetAudio){if(p_->audioSession)p_->audioSession->videoReset(resetAudio);}
-void CaptureCardSource::setAudioSync(unsigned mode,int offset){if(p_->audioSession)p_->audioSession->setSync(mode,offset);}
-sink::CaptureAudioState CaptureCardSource::audioState()const{auto state=p_->audioSession?p_->audioSession->snapshot():sink::CaptureAudioState{};if(!p_->audioError.empty())state.error=p_->audioError;return state;}
+void CaptureCardSource::videoPresented(double pts,int64_t time){
+    if(p_->wasapi){double mapping=0;{std::lock_guard lock(p_->mutex);if(!p_->haveVideoIngress)return;mapping=p_->videoIngressMs;}p_->wasapi->videoPresented(pts+mapping,time);}
+    else if(p_->audioSession)p_->audioSession->videoPresented(pts,time);
+}
+void CaptureCardSource::videoReset(bool resetAudio){if(p_->wasapi)p_->wasapi->videoReset(resetAudio);else if(p_->audioSession)p_->audioSession->videoReset(resetAudio);}
+void CaptureCardSource::setAudioSync(unsigned mode,int offset){if(p_->wasapi)p_->wasapi->setSync(mode,offset);else if(p_->audioSession)p_->audioSession->setSync(mode,offset);}
+sink::CaptureAudioState CaptureCardSource::audioState()const{auto state=p_->wasapi?p_->wasapi->snapshot():p_->audioSession?p_->audioSession->snapshot():sink::CaptureAudioState{};if(!p_->audioError.empty())state.error=p_->audioError;return state;}
 bool CaptureCardSource::open(const SourceOpenDesc& desc){return configure(desc)&&start();}
 bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAudioGain=-1;auto& p=*p_;CaptureSelection selection;if(!parseCapturePath(desc.path,selection))return false;const unsigned index=selection.videoIndex;const int format=selection.format;const int audio=selection.audio;
     if(selection.stable?!configuration(selection.videoPath,p.graph,p.builder,p.device,p.config):!configuration(index,p.graph,p.builder,p.device,p.config))return false;
@@ -257,7 +275,11 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
     p.info={};p.info.kind=pipeline::SourceKind::CaptureCard;p.info.width=p.layout.width;p.info.height=p.layout.height;p.info.averageFps=p.layout.duration>0?1e7/p.layout.duration:0;p.info.duration=pipeline::Rational::unknown();p.info.color=p.layout.color;
     p.nominalDuration100ns=p.layout.duration;
     log::info("capture-color",std::format("format={} stride={} rowBytes={} bytes={} bottomUp={} matrix={} assumed={} range={} assumed={} workingTransfer={} assumed={} (explicit transfer contract)",int(p.layout.format),p.layout.stride,p.layout.rowBytes,p.layout.sampleBytes,p.layout.bottomUp,int(p.info.color.matrix),p.info.color.matrixAssumed,int(p.info.color.range),p.info.color.rangeAssumed,int(p.info.color.transfer),p.info.color.transferAssumed));
-    if(audio!=kCaptureAudioDisabled){
+    if(audio==kCaptureAudioWasapi){
+        p.wasapi=std::make_unique<WasapiAudioInput>();
+        if(!p.wasapi->configure(selection.audioPath)){p.wasapi.reset();p.audioError=L"WASAPI 音频端点ID无效；视频继续运行";}
+        log::info("capture-audio","binding=wasapi shared=1 explicitEndpoint=1 videoClock=ingress-host-estimate");
+    }else if(audio!=kCaptureAudioDisabled){
         const bool audioReady=[&]{
         ComPtr<IBaseFilter> audioFilter;const bool embedded=audio==kCaptureAudioFromVideoDevice;
         if(embedded){
@@ -352,6 +374,7 @@ bool CaptureCardSource::start(){
     auto& p=*p_;if(p.info.opened)return true;if(!p.configured||!p.control)return false;
     if(p.audioSession&&!p.audioSession->start())log::warn("capture-audio","audio start failed; retaining video capture");
     p.lastFrame=Impl::Clock::now();const auto hr=p.control->Run();p.info.opened=SUCCEEDED(hr);
+    if(p.info.opened&&p.wasapi&&!p.wasapi->start())p.audioError=L"WASAPI 音频启动失败；视频继续运行";
     veyra::log::info("capture",std::format("Run hr=0x{:X} actual={}x{} nominalFps={:.3f} mailbox=1 ownedBuffers=2",unsigned(hr),p.info.width,p.info.height,p.info.averageFps));return p.info.opened;
 }
 CaptureMetrics CaptureCardSource::metrics()const{
@@ -383,6 +406,7 @@ SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,c
 }
 void CaptureCardSource::close()noexcept{
     auto& p=*p_;if(p.control)p.control->Stop();if(p.grab)p.grab->SetCallback(nullptr,0);
+    if(p.wasapi)p.wasapi->stop();p.wasapi.reset();p.videoIngressClock.reset();p.haveVideoIngress=false;p.videoIngressMs=0;
     if(p.audioSession)p.audioSession->stop();p.audioError.clear();
     p.events.Reset();p.control.Reset();p.grab.Reset();p.nullFilter.Reset();p.grabFilter.Reset();p.audioSink.Reset();p.audioFilter.Reset();p.config.Reset();p.device.Reset();p.builder.Reset();p.graph.Reset();p.referenceClock.Reset();p.audioSession.reset();
     av_frame_free(&p.frame);av_frame_free(&p.pendingFrame);p.info={};

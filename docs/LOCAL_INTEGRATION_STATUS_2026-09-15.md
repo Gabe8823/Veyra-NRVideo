@@ -20,6 +20,7 @@
 | 采集卡内置音频无法选择 | `d9a94eb` | 增加视频filter内置音频pin绑定、稳定DevicePath及旧连接串兼容；本机独立音频枚举和专项通过，反馈者内置音频实卡未验收。此提交标题为checkpoint，但确实包含该修复。 |
 | 长时间实时补帧截止时间漂移 | `ebba6f1` | live帧对重新锚定，源PTS仍保持真实；五分钟漂移模拟、DLSS 2/3/4 Create/Evaluate等通过。未完成反馈者显卡/采集卡同源实测。 |
 | 音频连续性、格式与恢复 | `dc44c48` | 保留连续重采样历史、有限浮点余量，区分软件空拉与设备断流；包含validBits/packed24、预填及视频reset隔离修复。撤销cubic和块级AGC方向；真实沙沙声未验收。 |
+| WASAPI录音端点输入 | 本轮本地整合 | UI同时显示`[WASAPI]`与`[DirectShow]`；共享模式、稳定endpoint ID、QPC时间轴、静音包和有界重连接入现有PCM链。本机USB3端点和视频+WASAPI组合通过静音回归；用户设备与听感未验收。 |
 
 详细记录：[媒体兼容](MEDIA_FILE_COMPATIBILITY_PLAN_2026-09-14.md)、[音频设备选择](CAPTURE_AUDIO_DEVICE_SELECTION_REPAIR_2026-09-14.md)、[FG时钟](CAPTURE_FG_CLOCK_REPAIR_2026-09-14.md)、[当前音频修复§6](CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md)。旧音频施工结论仅作追溯，以新方案§6为准。
 
@@ -50,3 +51,5 @@
 用户当前远程无法测试，不要求立即实卡验收。后续唯一诊断主线是取得问题场景同源PCM，在原始输入、转换后、最终输出前定位首次额外失真，再与系统输出/OBS进行条件匹配对照。完整生产链分段tap尚未实现，不能写成已有功能。不再凭音高猜过载，不盲加低通或块级自动增益。
 
 后续发布需要另行授权、完整候选包回归和依赖对应源码审计；不能直接把当前本地EXE标为已发布1.2.0修复包。
+
+WASAPI专项记录见 [WASAPI接入方案与证据](WASAPI_CAPTURE_INPUT_PLAN_2026-09-15.md)。
