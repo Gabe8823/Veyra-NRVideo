@@ -44,6 +44,7 @@ struct WasapiAudioInput::Impl {
     mutable std::mutex mutex;std::unique_ptr<sink::CaptureAudioSession> session;
     std::wstring id,error;std::thread worker;Handle stopEvent;std::atomic<bool> stopping{true};
     float gain=1;unsigned mode=0;int offset=0;double videoPts=0;int64_t videoHost=0;bool haveVideo=false;
+    std::optional<int64_t> videoArrival;
     WasapiInputMetrics metrics;bool injectedLoss=false;
     HRESULT stream(){
         ComPtr<IMMDeviceEnumerator> enumerator;ComPtr<IMMDevice> device;ComPtr<IMMEndpoint> endpoint;
@@ -80,7 +81,7 @@ struct WasapiAudioInput::Impl {
             if(!session->configure(format)){session.reset();return AUDCLNT_E_UNSUPPORTED_FORMAT;}
             session->setGain(gain);session->setSync(mode,offset);
             if(!session->start()){session.reset();return E_FAIL;}
-            if(haveVideo)session->videoPresented(videoPts,videoHost);
+            if(haveVideo)session->videoPresented(videoPts,videoHost,videoArrival);
         }
         hr=client->Start();if(!checked(hr,"Start capture"))return hr;
         struct StopClient {IAudioClient* client;~StopClient(){checked(client->Stop(),"Stop capture");}} stopClient{client.Get()};
@@ -149,7 +150,7 @@ bool WasapiAudioInput::start(){
 void WasapiAudioInput::stop(){p_->stopping=true;if(p_->stopEvent.value)SetEvent(p_->stopEvent.value);if(p_->worker.joinable())p_->worker.join();}
 void WasapiAudioInput::setGain(float value){std::lock_guard lock(p_->mutex);p_->gain=std::clamp(value,0.f,1.f);if(p_->session)p_->session->setGain(p_->gain);}
 void WasapiAudioInput::setSync(unsigned mode,int offset){std::lock_guard lock(p_->mutex);p_->mode=std::min(mode,2u);p_->offset=std::clamp(offset,-250,250);if(p_->session)p_->session->setSync(p_->mode,p_->offset);}
-void WasapiAudioInput::videoPresented(double pts,int64_t host){std::lock_guard lock(p_->mutex);p_->haveVideo=true;p_->videoPts=pts;p_->videoHost=host;if(p_->session)p_->session->videoPresented(pts,host);}
+void WasapiAudioInput::videoPresented(double pts,int64_t host,std::optional<int64_t> arrival){std::lock_guard lock(p_->mutex);p_->haveVideo=true;p_->videoPts=pts;p_->videoHost=host;p_->videoArrival=arrival;if(p_->session)p_->session->videoPresented(pts,host,arrival);}
 void WasapiAudioInput::videoReset(bool resetAudio){std::lock_guard lock(p_->mutex);p_->haveVideo=false;if(p_->session)p_->session->videoReset(resetAudio);}
 sink::CaptureAudioState WasapiAudioInput::snapshot()const{std::lock_guard lock(p_->mutex);auto state=p_->session?p_->session->snapshot():sink::CaptureAudioState{};if(!p_->error.empty())state.error=p_->error;return state;}
 WasapiInputMetrics WasapiAudioInput::metrics()const{std::lock_guard lock(p_->mutex);return p_->metrics;}

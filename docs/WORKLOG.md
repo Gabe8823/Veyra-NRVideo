@@ -1,5 +1,11 @@
 # 2026-09-11 继续修复目标模式执行中
 
+## 2026-09-15 VRR / 自动音频补偿延迟排查
+
+用户反馈疑似采集卡在PS5开启VRR后自动补偿导致声音延迟、关闭补偿恢复。当前没有反馈者版本/实卡日志，不能认定VRR根因。新增生产CaptureAudioSession诊断`--sync-clock-audit`：正常可变观察间隔下补偿35.50ms、PCM队列13.75ms；保持合成画面延迟35ms而视频PTS后移1200ms时，补偿1235.51ms、PCM队列1214.56ms；同时间戳关闭补偿后0ms/10ms。真实WASAPI、合成PCM且增益0，不是实卡或声学测量。专项exit1保留失败，证明现有自动同步缺少时间戳可比性验证；未修改产品同步策略。
+
+构建`cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0（2/2）；诊断用`scripts/acceptance/scheduler-short-test.ps1 -Name capture-sync-clock-audit-20260915 -Exe out/build/audio-continuity-repair-20260915/veyra_capture_audio_tests.exe -TestArgs '--sync-clock-audit'`运行11.60秒。完整失败证据、现有1.5秒目标/2秒队列边界、修改文件和修复方案见[VRR音频同步排查](CAPTURE_VRR_AUDIO_SYNC_AUDIT_2026-09-15.md)。未执行RTX Create/Evaluate、物理VRR或听测，未改DLL/SDK，未发布。下一步是基于同帧入口/呈现时间验证同步时钟关系，并取得反馈者日志确认真实触发机制。
+
 ## 2026-09-14 采集卡内部 FG 时间线修复
 
 用户反馈 RTX 4070 Ti 开启内部 FG、NR/SR 关闭后很快显示过载。排查确认物理采集的源 PTS 与主机回调时钟存在 59.94/60Hz 长期漂移；旧代码只在会话开始锚定一次，导致补帧截止时间累积落后数百毫秒，软件准入连续拒绝 FG，并非已证实的 GPU OOM 或 NR/SR 负载。已在 `codex/capture-fg-clock-repair-20260914` 分支修复：物理采集/PS5/live replay 按每个 A/B 对重新锚定，保留对内 FG 节奏；新增 `timeline=capture-pair` 诊断，UI 将“过载”改为“补帧受限”。
@@ -2144,3 +2150,25 @@ WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer
 - 旧 `test-audio-continuity.ps1` 12组音频专项此前已通过；本轮补充脚本中的WASAPI离线时钟项，未重复声学/GPU验收。
 
 候选仍是本地 `out/build/audio-continuity-repair-20260915/veyra.exe`，未更新版本号、未修改运行组件、未push、未发布。WASAPI接入已具备本机候选证据，但反馈者设备的端点是否提供正确采集音频、以及火堆/口哨沙沙声是否改善，均未验收。
+
+## 2026-09-15 采集自动同步异常补偿修复
+
+用户授权修复采集自动同步可能累积数秒声音等待的问题。新增 `CaptureSyncTarget.h`，以同一原始视频帧的到达至呈现时间核对跨音视频时间戳；差异超过80ms时回退本机延迟估算，连续2秒恢复可信才退出回退。80ms是可信度策略，不是硬件实测；真实上游偏移可能需要手动校准。CaptureCardSource、WASAPI输入适配和EngineController传递匹配帧的到达时刻，排除生成/缓存帧；CaptureAudioSession记录原始、接受及回退目标，LiveStatusPanel显示异常回退。PS5无到达时刻的旧接口与文件音频保持原路径。
+
+专项测试另发现慢启动时原始PCM积压未纳入过期处理。修复在输出启动/重新对齐前转换有界待处理输入，让已有恢复策略清理过期声音；正常运行的填充策略保持。新增恢复丢弃计数及650ms慢启动注入。修复前合成慢启动P95偏差646.558ms、额外重置4次，修复后专测20.1321ms、额外重置/欠载0；移除启动时648.396ms过期PCM。最终16组套件中的慢启动P95为15.2911ms。时间戳单独偏移1200ms用例的目标从修复前1235.51ms降为35ms，软件队列从1214.56ms降为10ms；真实400/900ms本机处理等待仍保留。
+
+实际命令及结果：
+
+- `cmd.exe /c out\build\veyra-build-x64-release.cmd`：最终构建成功，增量4/4，RemotePlay ON及patched FFmpeg/dav1d保持；日志 `logs/capture-sync-repair-20260915/build-final.log`。中途测试引用未声明kAudioRate导致两次编译失败，改为测试固定48kHz下的24000帧阈值后通过。
+- `out/build/audio-continuity-repair-20260915/veyra_repair_contract_tests.exe`：123项，失败0；`logs/capture-sync-repair-20260915/contracts.log`。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/capture-sync-repair-20260915/final`：16组全部exit0，含立体声/5.1、端点恢复、时间戳异常、慢启动、手动/关闭补偿及文件时间线；证据 `final/results.json`。
+- 上述命令增加 `-DriftOnly`：两组120秒全部exit0。1.001与0.999输入速度的P95偏差分别4.22906/4.23319ms，missing=0、resets=1（仅启动）、队列高水位89.6458ms；`final/drift-results.json`及对应stdout日志。
+- `scripts/run-short-test.ps1 -Exe out/build/audio-continuity-repair-20260915/veyra.exe -Arguments @('--smoke-empty','--smoke-seconds','2','--no-nr','--no-sr','--no-fg') -TimeoutSeconds 30 -LogPrefix logs/capture-sync-repair-20260915/gui-smoke`：空界面启动exit0，处理帧0，不代表媒体或增强验收。`git diff --check`通过；源码Git未跟踪DLL/LIB/EXE/模型/PYC。
+
+当前候选EXE为11,463,168字节，SHA256 `F060238E39311D9E2D3D8B8CB4EA50B0CBB6E4BD24E67BC10D90A249F417BACC`。构建目录仍为 `out/build/audio-continuity-repair-20260915/`；根目录旧启动器未调整。本轮未发布、未修改运行组件或版本号。完整方案、修改文件与证据见 `docs/CAPTURE_VRR_AUDIO_SYNC_AUDIT_2026-09-15.md`。
+
+测试使用合成采集时序与真实WASAPI静音输出，未执行反馈者实卡、VRR开关对照、声音录制或RTX Create/Evaluate/GPU delivery。软件缺陷有复现及修复证据，但不能认定VRR为反馈者根因。下一步唯一验收：反馈者同一采集卡/场景开启自动同步，对照VRR开关并提供新目标/队列日志。
+
+## 2026-09-15 用户集中反馈总修复方案
+
+用户汇总14项问题：采集卡选择记忆、播放器seek/流畅性、UI闪烁、采集断连重连、全屏控制、HDR/SDR发灰、NR内部处理分辨率、OBS resize回归、Dolby Vision、FG后端失败、XeSS计时、同步/增强冗余、40系过载、视频导出队列与BT.2020错误、PS5串流增强初始化失败。已建立 `docs/USER_ISSUES_REPAIR_PLAN_2026-09-15.md`，按“不可用恢复→颜色→交互→性能→导出→Dolby Vision”分批施工，记录每项证据、验收合同和未验证边界。本轮仅建立方案，未修改代码、未构建、未发布；后续按批次逐项更新实际结果，不能把方案文档当作修复完成证明。

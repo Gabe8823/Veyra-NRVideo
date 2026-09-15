@@ -18,6 +18,7 @@
 #include "veyra/Log.h"
 #include "veyra/sink/AudioFrameTimeline.h"
 #include "veyra/sink/ArrivalClockMapping.h"
+#include "veyra/sink/CaptureSyncTarget.h"
 int main(){
     using namespace veyra;int failures=0,checks=0;
     auto check=[&](bool ok,const char* name){++checks;if(!ok)++failures;std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n';};
@@ -40,6 +41,41 @@ int main(){
     for(int i=0;i<60000;++i)mapping=ingressClock.observe(1000+i*10.01+(i%13==5?4:0),i*10.0);
     check(std::abs(mapping-(1000+59999*.01))<2.1,"ten-minute audio ingress mapping ages oscillator drift instead of retaining startup minimum");
     ingressClock.reset();check(ingressClock.observe(100,0)==100,"audio discontinuity replaces prior ingress mapping");
+    {
+        sink::CaptureSyncTarget sync;bool valid=true;
+        for(int i=0;i<300;++i){
+            const double host=10000+i*17+(i%3)*3,delay=30+(i%2)*5;
+            const auto r=sync.observe(delay,host,host-delay);
+            valid&=!r.fallback&&r.targetMs>=30&&r.targetMs<=35;
+        }
+        check(valid,"capture sync accepts variable cadence with consistent clocks");
+        auto r=sync.observe(1235,16000,15965);
+        check(r.fallback&&r.targetMs<=35,"capture timestamp jump cannot create a second of audio waiting");
+        sync.invalidate();r=sync.observe(935,16020,15985);
+        check(r.fallback&&r.targetMs==35,"video history reset retains clock fallback");
+        for(int i=0;i<90;++i)r=sync.observe(35,17000+i*17,16965+i*17);
+        check(r.fallback,"clock fallback requires sustained matching evidence");
+        r=sync.observe(35,19100,19065);
+        check(!r.fallback,"consistent clocks recover after two seconds");
+        sync.reset();bool bounded=true;
+        for(int i=0;i<60000;++i){const double host=10000+i*10.;r=sync.observe(35+i*.03,host,host-35);bounded&=r.targetMs<=115;}
+        check(bounded&&r.fallback&&r.targetMs==35,"independent video clock drift cannot accumulate seconds of compensation");
+        for(double delay:{80.,400.,900.}){
+            sync.reset();r=sync.observe(delay,10000,10000-delay);
+            check(!r.fallback&&r.targetMs==delay,"genuine measured video residence retains automatic synchronization");
+        }
+        sync.reset();for(int i=0;i<5;++i)sync.observe(35,10000+i*20,9965+i*20);
+        r=sync.observe(400,10100,9700);
+        check(r.targetMs==35,"one real presentation stall does not change the audio target");
+        r=sync.observe(35,10120,10121);
+        check(r.fallback&&std::isfinite(r.targetMs),"invalid future ingress triggers fallback");
+        sync.reset();r=sync.observe(std::numeric_limits<double>::quiet_NaN(),11000,10965);
+        check(r.fallback&&r.targetMs==35,"nonfinite cross-stream timestamp cannot poison audio target");
+        sync.reset();r=sync.observe(900,10000,std::nullopt);
+        check(!r.fallback&&r.targetMs==900,"sources without capture provenance retain their separate clock contract");
+        r=sync.observe(2000,12000,10000);
+        check(r.limited&&r.targetMs==1500,"real excessive residence retains explicit compensation limit");
+    }
     sink::AudioFrameTimeline pcmTime;
     check(pipeline::ResolutionPlan::make({1920,1080},true,pipeline::NrSizePolicy::Native,false,1,pipeline::SrTarget::Uhd4K,true).nr==pipeline::Extent{1920,1080},"NR-first preview uses source resolution");
     check(pipeline::ResolutionPlan::make({1920,1080},true,pipeline::NrSizePolicy::Native,true,1,pipeline::SrTarget::Uhd4K,true).nr==pipeline::Extent{3840,2160},"export ignores low latency preview order");

@@ -21,12 +21,14 @@ int main(int argc,char** argv){
         }
     } pacer;
     const bool endpointTest=argc>=2&&std::string_view(argv[1])=="--endpoint-loss";
-    const bool jitterTest=argc>=2&&std::string_view(argv[1])=="--jitter";
+    const bool slowStart=argc>=2&&std::string_view(argv[1])=="--slow-start";
+    const bool jitterTest=slowStart||(argc>=2&&std::string_view(argv[1])=="--jitter");
     const bool transientTest=argc>=2&&std::string_view(argv[1])=="--transient";
     const bool compensatedTransientTest=argc>=2&&std::string_view(argv[1])=="--transient-comp";
     const bool fastDrift=argc>=2&&std::string_view(argv[1])=="--drift-fast";
     const bool driftTest=fastDrift||(argc>=2&&std::string_view(argv[1])=="--drift-slow");
     if(endpointTest)SetEnvironmentVariableW(L"VEYRA_TEST_CAPTURE_AUDIO_ENDPOINT_LOSS",L"1");
+    if(slowStart)SetEnvironmentVariableW(L"VEYRA_TEST_CAPTURE_AUDIO_SLOW_START",L"1");
     const bool multichannel=argc>=3&&std::string_view(argv[2])=="--5.1";
     CaptureAudioSession audio;WAVEFORMATEX f{};f.wFormatTag=WAVE_FORMAT_PCM;f.nChannels=2;f.nSamplesPerSec=transientTest?44100:48000;f.wBitsPerSample=16;f.nBlockAlign=4;f.nAvgBytesPerSec=f.nSamplesPerSec*f.nBlockAlign;
     auto extended=floatWave({6,0x60f});extended.SubFormat=KSDATAFORMAT_SUBTYPE_PCM;extended.Format.wBitsPerSample=16;extended.Samples.wValidBitsPerSample=16;extended.Format.nBlockAlign=12;extended.Format.nAvgBytesPerSec=576000;
@@ -34,6 +36,48 @@ int main(int argc,char** argv){
     const unsigned channels=multichannel?6:2;std::vector<int16_t> pcm(480*channels);
     for(size_t i=0;i<pcm.size()/channels;++i)for(unsigned c=0;c<channels;++c)pcm[i*channels+c]=int16_t(2000*std::sin((i*channels+c)*0.031));
     const auto start=Clock::now();
+    const bool legacyClock=argc>=2&&std::string_view(argv[1])=="--legacy-clock";
+    auto present=[&](double pts,int64_t host,double localDelay){
+        audio.videoPresented(pts,host,legacyClock?std::nullopt:std::optional<int64_t>(host-int64_t(localDelay*10000)));
+    };
+    if(argc>=2&&std::string_view(argv[1])=="--sync-clock-audit"){
+        // Synthetic source timestamps with real, muted WASAPI output. A PTS
+        // origin change must not be mistaken for extra video processing time.
+        unsigned sequence=0;
+        auto phase=[&](const char* name,unsigned mode,double videoOffset,unsigned blocks){
+            audio.setSync(mode,0);
+            unsigned nextVideo=sequence;
+            double maxCompensation=0,maxQueue=0;unsigned observations=0;
+            for(unsigned j=0;j<blocks;++j,++sequence){
+                pacer.until(start+std::chrono::milliseconds(sequence*10));
+                if(!audio.push(pcm.data(),pcm.size()*2,sequence*10.0,sequence==0))return false;
+                const auto host=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
+                if(sequence>=nextVideo){
+                    audio.videoPresented(sequence*10.0-35-videoOffset,host,host-350000);
+                    nextVideo=sequence+1+(sequence%3);
+                }
+                if(j+100>=blocks){
+                    const auto s=audio.snapshot();
+                    maxCompensation=std::max(maxCompensation,s.compensationMs);
+                    maxQueue=std::max(maxQueue,s.bufferedMs);
+                    if(s.running)++observations;
+                }
+            }
+            const auto s=audio.snapshot();
+            const bool pass=observations>=80&&maxCompensation<100&&maxQueue<200;
+            std::cout<<(pass?"PASS ":"FAIL ")<<name<<" videoPtsOffsetMs="<<videoOffset
+                <<" actualVideoDelayMs=35 maxCompensationMs="<<maxCompensation
+                <<" maxQueuedMs="<<maxQueue<<" runningSamples="<<observations
+                <<" resets="<<s.resets<<" overflows="<<s.overflows<<std::endl;
+            return pass;
+        };
+        const bool jitter=phase("aligned_variable_cadence",0,0,400);
+        const bool offset=phase("video_timestamp_offset",0,1200,500);
+        const bool off=phase("same_offset_compensation_off",2,1200,250);
+        audio.stop();
+        std::cout<<"Synthetic clock-axis audit only; not physical VRR or acoustic measurement.\n";
+        return jitter&&offset&&off?0:1;
+    }
     if(transientTest){
         const size_t frames=441;std::vector<int16_t> block(frames*2);
         for(unsigned blockIndex=0;blockIndex<30;++blockIndex){
@@ -54,7 +98,7 @@ int main(int argc,char** argv){
             std::fill(block.begin(),block.end(),blockIndex>=300&&blockIndex<310?int16_t(32767):int16_t(0));
             if(!audio.push(block.data(),block.size()*sizeof(int16_t),blockIndex*10.0,blockIndex==0))return 11;
             const auto host=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
-            audio.videoPresented(blockIndex*10.0-80,host);
+            present(blockIndex*10.0-80,host,80);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
         const auto state=audio.snapshot();audio.stop();
@@ -70,7 +114,7 @@ int main(int argc,char** argv){
             const auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
             // Callback every 10ms; video updates at ~30fps with 30/35ms
             // software delay. Both share the original input PTS time base.
-            if(i>=4&&i%3==0)audio.videoPresented(i*10.0-((i/3)%2?30:35),now);
+            if(i>=4&&i%3==0)present(i*10.0-((i/3)%2?30:35),now,(i/3)%2?30:35);
             const auto s=audio.snapshot();
             if(i==100){settledResets=s.resets;settledUnderruns=s.underruns;}
             if(i>100){if(s.running&&s.skewMs)errors.push_back(std::abs(*s.skewMs));else ++missing;}
@@ -78,7 +122,7 @@ int main(int argc,char** argv){
         const auto s=audio.snapshot();audio.stop();std::sort(errors.begin(),errors.end());
         const double p95=errors.empty()?999:errors[(errors.size()*95+99)/100-1];
         const bool inputTelemetry=s.inputBlocks==500&&std::abs(s.inputBlockMs-10)<.001&&s.inputIntervalMs>=0&&s.inputIntervalMs<100&&s.inputPeak>.01&&s.nonFiniteSamples==0&&s.clippedSamples==0;
-        const bool pass=inputTelemetry&&missing==0&&s.resets==settledResets&&s.underruns==settledUnderruns&&s.overflows==0&&p95<35;
+        const bool pass=inputTelemetry&&missing==0&&s.resets==settledResets&&s.underruns==settledUnderruns&&s.overflows==0&&p95<35&&(!slowStart||s.recoveryDiscardedFrames>24000);
         std::cout<<(pass?"PASS ":"FAIL ")<<"CAPTURE_JITTER additionalResets="<<s.resets-settledResets<<" additionalUnderruns="<<s.underruns-settledUnderruns<<" missing="<<missing<<" p95SkewMs="<<p95<<" inputBlocks="<<s.inputBlocks<<" inputBlockMs="<<s.inputBlockMs<<" inputIntervalMs="<<s.inputIntervalMs<<" peak="<<s.inputPeak<<" nonFinite="<<s.nonFiniteSamples<<" clipped="<<s.clippedSamples<<'\n';
         return pass?0:1;
     }
@@ -89,7 +133,7 @@ int main(int argc,char** argv){
             pacer.until(start+std::chrono::microseconds(int64_t(i*10000/speed)));
             const auto host=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
             if(!audio.push(pcm.data(),pcm.size()*2,i*10.0,i==0))return 6;
-            if(i>=8)audio.videoPresented(i*10.0-80,host);
+            if(i>=8)present(i*10.0-80,host,80);
             const auto s=audio.snapshot();if(i>1000){if(s.running&&s.skewMs)errors.push_back(std::abs(*s.skewMs));else ++missing;}
             if(i&&i%2000==0)std::cout<<"DRIFT seconds="<<i/100<<" skewMs="<<s.skewMs.value_or(-999)<<" resets="<<s.resets<<" queueMs="<<s.bufferedMs<<" correctionPpm="<<s.driftCorrectionPpm<<std::endl;
         }
@@ -103,7 +147,7 @@ int main(int argc,char** argv){
         const auto due=start+std::chrono::milliseconds(i*10);pacer.until(due);
         const auto time=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
         if(!audio.push(pcm.data(),pcm.size()*2,i*10.0,i==0))return 3;
-        if(i>=8)audio.videoPresented(i*10.0-80,time);
+        if(i>=8)present(i*10.0-80,time,80);
         const auto s=audio.snapshot();bounded&=s.bufferedMs<=520;
         sawReconnecting|=!s.error.empty();
         if(i>(endpointTest?240u:70u)&&s.running&&s.skewMs){sum+=std::abs(*s.skewMs);++count;}
@@ -121,7 +165,7 @@ int main(int argc,char** argv){
             pacer.until(start+std::chrono::milliseconds(sequence*10));
             const auto host=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()/100;
             if(!audio.push(pcm.data(),pcm.size()*2,sequence*10.0-commonInputMs,j==0&&commonInputMs!=0))return false;
-            audio.videoPresented(sequence*10.0-commonInputMs-delay,host);const auto s=audio.snapshot();
+            present(sequence*10.0-commonInputMs-delay,host,delay);const auto s=audio.snapshot();
             boundedPhase&=s.bufferedMs<=2000;
             if(j>steps-80&&s.running&&s.skewMs){error+=std::abs(*s.skewMs-expectedSkew);++samples;}
         }

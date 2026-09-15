@@ -135,11 +135,13 @@ inline LRESULT CALLBACK proc(HWND h,UINT message,WPARAM wp,LPARAM lp){
         if(!s.capture&&s.audioAvailable)rows.emplace_back(L"声音领先 · 软件估算",std::format(L"{:.1f} ms",s.lateMs));
         if(s.capture&&s.audioAvailable){
             rows.emplace_back(L"音频格式",std::format(L"{} Hz · {} bit / {} valid{}",s.captureAudio.inputSampleRate,s.captureAudio.inputContainerBits,s.captureAudio.inputValidBits,s.captureAudio.inputFloating?L" · Float":L""));
-            rows.emplace_back(L"音画偏差 · 声音领先",ms(s.captureAudio.skewMs));
+            rows.emplace_back(s.captureAudio.syncClockFallback?L"估算偏差 · 本机时钟":L"音画偏差 · 声音领先",ms(s.captureAudio.skewMs));
             rows.emplace_back(L"声音补偿",std::format(L"{:.1f} ms{}",s.captureAudio.compensationMs,s.captureAudio.limited?L" · 已达边界":L""));
+            if(s.captureAudio.syncClockFallback)rows.emplace_back(L"同步状态",L"时间戳异常回退 · 本机延迟估算");
             rows.emplace_back(L"PCM队列",std::format(L"{:.1f} ms",s.captureAudio.bufferedMs));
             rows.emplace_back(L"音频设备队列",std::format(L"{:.1f} ms",s.captureAudio.endpointBufferedMs));
             rows.emplace_back(L"音频重锚 / 溢出",std::format(L"{} / {}",s.captureAudio.resets,s.captureAudio.overflows));
+            if(s.captureAudio.recoveryDiscardedFrames)rows.emplace_back(L"恢复时跳过的旧音频",std::format(L"{:.1f} ms",s.captureAudio.recoveryDiscardedFrames/48.0));
             rows.emplace_back(L"欠载 / 可测缺口 / 插入静音",std::format(L"{} / {:.1f} / {:.1f} ms",s.captureAudio.underruns,s.captureAudio.underrunFrames/48.0,s.captureAudio.silenceFrames/48.0));
             if(s.captureAudio.clockStalledGaps)rows.emplace_back(L"时钟未量出时长的断流",std::to_wstring(s.captureAudio.clockStalledGaps));
             rows.emplace_back(L"转换峰值 / 超满幅 / 异常",std::format(L"{:.4f} / {} / {}",s.captureAudio.inputPeak,s.captureAudio.overRangeSamples,s.captureAudio.nonFiniteSamples+s.captureAudio.invalidPaddingSamples));

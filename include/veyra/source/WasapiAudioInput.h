@@ -36,7 +36,7 @@ public:
     bool configure(std::wstring endpointId);
     bool start();void stop();
     void setGain(float);void setSync(unsigned,int);
-    void videoPresented(double hostAxisPtsMs,int64_t host100ns);
+    void videoPresented(double hostAxisPtsMs,int64_t host100ns,std::optional<int64_t> arrival100ns={});
     void videoReset(bool resetAudio);
     sink::CaptureAudioState snapshot()const;
     WasapiInputMetrics metrics()const;

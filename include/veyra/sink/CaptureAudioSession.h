@@ -13,6 +13,9 @@ struct CaptureAudioState {
     uint32_t inputSampleRate=0;unsigned inputContainerBits=0,inputValidBits=0;bool inputFloating=false;
     double compensationMs=0,bufferedMs=0,bufferHighWaterMs=0,endpointBufferedMs=0;
     double driftCorrectionPpm=0;
+    uint64_t recoveryDiscardedFrames=0;
+    bool syncClockFallback=false;
+    double rawCompensationMs=0,localVideoDelayMs=0;
     double inputBlockMs=0,inputIntervalMs=0;
     double inputPeak=0; // Historical API name: peak AFTER sample conversion.
     uint64_t inputBlocks=0;
@@ -31,7 +34,9 @@ public:
     bool start();
     void stop();
     bool push(const void* data,size_t bytes,double ptsMs,bool discontinuity);
-    void videoPresented(double ptsMs,int64_t host100ns);
+    // Arrival is the matching original capture frame, not the latest callback.
+    // Omit only for sources with their own existing timestamp contract (PS5).
+    void videoPresented(double ptsMs,int64_t host100ns,std::optional<int64_t> arrival100ns={});
     // Invalidate software presentation.  A video graph rebuild can preserve
     // the audio clock; callers that are actually pausing the transport may
     // request the old audio reset explicitly.

@@ -1,6 +1,5 @@
 #include "veyra/source/CaptureCardSource.h"
 #include "veyra/source/WasapiAudioInput.h"
-#include "veyra/sink/ArrivalClockMapping.h"
 #include "veyra/source/CaptureTiming.h"
 #include "veyra/source/CaptureMediaType.h"
 #include "veyra/source/NativeCaptureSink.h"
@@ -127,7 +126,6 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
     ComPtr<IBaseFilter> audioSink;ComPtr<IReferenceClock> referenceClock;
     std::unique_ptr<sink::CaptureAudioSession> audioSession;
     std::unique_ptr<WasapiAudioInput> wasapi;
-    sink::ArrivalClockMapping videoIngressClock;double videoIngressMs=0;bool haveVideoIngress=false;
     std::wstring audioError;
     SourceInfo info;CaptureMediaLayout layout;Clock::time_point lastFrame;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** pp)override{if(!pp)return E_POINTER;*pp=nullptr;if(id==IID_IUnknown||id==__uuidof(ISampleGrabberCB)){*pp=static_cast<ISampleGrabberCB*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
@@ -151,11 +149,6 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
                 pendingDiscontinuity=captureDiscontinuity(pending,pendingDiscontinuity,
                     sample->IsDiscontinuity()==S_OK,received>0,pendingTime,time,info.averageFps);
                 pending=true;pendingTime=time;pendingArrival=arrival;
-                if(wasapi){
-                    if(sample->IsDiscontinuity()==S_OK)videoIngressClock.reset();
-                    videoIngressMs=videoIngressClock.observe(std::chrono::duration<double,std::milli>(arrival.time_since_epoch()).count(),time*1000);
-                    haveVideoIngress=true;
-                }
                 pendingDuration=captureDuration(sampleStart,sampleEnd,sampleTime,nominalDuration100ns);
                 if(!received)firstArrival=arrival;
                 ++received;latestArrival=arrival;
@@ -219,9 +212,9 @@ bool CaptureCardSource::setAudioGain(float gain){
     if(SUCCEEDED(hr)){long attenuation=gain<=0?-10000:long(std::clamp(2000.0*std::log10(double(gain)),-10000.0,0.0));hr=audio->put_Volume(attenuation);}
     p.lastAudioGain=gain;p.audioGainSupported=SUCCEEDED(hr);log::info("capture-audio",std::format("application gain={} hr=0x{:X}",gain,unsigned(hr)));return p.audioGainSupported;
 }
-void CaptureCardSource::videoPresented(double pts,int64_t time){
-    if(p_->wasapi){double mapping=0;{std::lock_guard lock(p_->mutex);if(!p_->haveVideoIngress)return;mapping=p_->videoIngressMs;}p_->wasapi->videoPresented(pts+mapping,time);}
-    else if(p_->audioSession)p_->audioSession->videoPresented(pts,time);
+void CaptureCardSource::videoPresented(double pts,int64_t time,int64_t arrival){
+    if(p_->wasapi)p_->wasapi->videoPresented(double(arrival)/10000,time,arrival);
+    else if(p_->audioSession)p_->audioSession->videoPresented(pts,time,arrival);
 }
 void CaptureCardSource::videoReset(bool resetAudio){if(p_->wasapi)p_->wasapi->videoReset(resetAudio);else if(p_->audioSession)p_->audioSession->videoReset(resetAudio);}
 void CaptureCardSource::setAudioSync(unsigned mode,int offset){if(p_->wasapi)p_->wasapi->setSync(mode,offset);else if(p_->audioSession)p_->audioSession->setSync(mode,offset);}
@@ -406,7 +399,7 @@ SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,c
 }
 void CaptureCardSource::close()noexcept{
     auto& p=*p_;if(p.control)p.control->Stop();if(p.grab)p.grab->SetCallback(nullptr,0);
-    if(p.wasapi)p.wasapi->stop();p.wasapi.reset();p.videoIngressClock.reset();p.haveVideoIngress=false;p.videoIngressMs=0;
+    if(p.wasapi)p.wasapi->stop();p.wasapi.reset();
     if(p.audioSession)p.audioSession->stop();p.audioError.clear();
     p.events.Reset();p.control.Reset();p.grab.Reset();p.nullFilter.Reset();p.grabFilter.Reset();p.audioSink.Reset();p.audioFilter.Reset();p.config.Reset();p.device.Reset();p.builder.Reset();p.graph.Reset();p.referenceClock.Reset();p.audioSession.reset();
     av_frame_free(&p.frame);av_frame_free(&p.pendingFrame);p.info={};

@@ -827,7 +827,9 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                                     veyra::log::info("xess-fg-gate",std::format("event={} revision={} lateMs={:.3f}",xessGenerationGate.suppressed()?"suppress":"resume",item.identity.settingsRevision,nowMs()-itemPtsMs));
                                 }
                             }
-                            if(didPresent&&physicalCapture)captureSource.videoPresented(double(item.pts100ns)/10000,host100ns());
+                            // Real B owns captureArrival. Generated A/B frames and
+                            // paused cached frames must not invent input anchors.
+                            if(didPresent&&physicalCapture&&!generated&&!rereadCached)captureSource.videoPresented(double(item.pts100ns)/10000,host100ns(),captureArrival);
 #ifdef VEYRA_ENABLE_REMOTEPLAY
                             if(didPresent&&remote)remote->videoPresented(double(item.pts100ns)/10000,host100ns());
 #endif

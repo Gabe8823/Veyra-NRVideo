@@ -44,7 +44,7 @@ int wmain(int argc,wchar_t** argv){
     source.setAudioSync(wasapiTest?0:2,0);
     const AVFrame* frame=nullptr;veyra::pipeline::FramePacket packet;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
-    auto readFrame=[&](){while(std::chrono::steady_clock::now()<deadline){auto r=source.read(packet,&frame);if(r==veyra::source::SourceReadStatus::Frame){if(wasapiTest)source.videoPresented(packet.pts.toDouble()*1000,std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()/100);return true;}if(r==veyra::source::SourceReadStatus::Error)return false;}return false;};
+    auto readFrame=[&](){while(std::chrono::steady_clock::now()<deadline){auto r=source.read(packet,&frame);if(r==veyra::source::SourceReadStatus::Frame){if(wasapiTest)source.videoPresented(packet.pts.toDouble()*1000,std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()/100,packet.arrivalHost100ns);return true;}if(r==veyra::source::SourceReadStatus::Error)return false;}return false;};
     if(!readFrame()){printf("FAIL first frame\n");return 5;}
     const auto initialPts=packet.pts.toDouble();const auto initialReceived=source.metrics().received;
     const int rowBytes=av_image_get_linesize(AVPixelFormat(frame->format),frame->width,0);

@@ -36,8 +36,8 @@
 候选为本机完整构建目录，不是新的便携发布包。移动EXE时不能遗漏同目录依赖和shader。
 
 - 路径：`out/build/audio-continuity-repair-20260915/veyra.exe`（相对项目根目录）。
-- 大小：11,442,688字节。
-- SHA256：`F26C655DDF7D9CF07FBA35AEA323059B9F65708139AB580015CF788B23D1D552`。
+- 大小：11,463,168字节（本轮自动同步修复候选）。
+- SHA256：`F060238E39311D9E2D3D8B8CB4EA50B0CBB6E4BD24E67BC10D90A249F417BACC`。
 - RemotePlay ON；FFmpeg前缀 `C:/veyra-deps/ffmpeg-ps5-dav1d-installed`。SDK、DLL和模型未加入源码Git。
 - 前轮最终专项：12组短用例均exit0；离线生产DSP47/47；两组各120秒±1000ppm漂移回归exit0，P95软件偏差4.24594/4.30137ms，missing=0、resets=1（启动），队列高水位89.6458ms。均不冒充用户声学验收。
 - 日志：`logs/audio-continuity-repair-20260915/final/`，含 `results.json`、`drift-results.json`、波形/端点/漂移日志；日志被Git忽略，仅本机存在。
@@ -53,3 +53,5 @@
 后续发布需要另行授权、完整候选包回归和依赖对应源码审计；不能直接把当前本地EXE标为已发布1.2.0修复包。
 
 WASAPI专项记录见 [WASAPI接入方案与证据](WASAPI_CAPTURE_INPUT_PLAN_2026-09-15.md)。
+
+最新本地候选还包含[采集自动补偿与慢启动积压修复](CAPTURE_VRR_AUDIO_SYNC_AUDIT_2026-09-15.md)：以匹配原帧的到达时间校验跨流时间戳，异常时回退本机处理时间估算；启动/恢复时清理已过期音频并明确记录。该候选的测试结果以此专项文档为准，上文合并轮记录仍属历史证据。反馈者实卡VRR原因尚未证实，未发布。根目录旧启动脚本仍指向 `out/build/x64-release`，本轮测试请直接启动上述候选EXE。
