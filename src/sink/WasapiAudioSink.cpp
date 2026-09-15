@@ -475,7 +475,10 @@ bool AudioRenderer::pumpOnce(AudioPcmSource& pipeline, double* firstWrittenPtsMs
             silenceFrames_.fetch_add(written);
         }
     }
+    // ReleaseBuffer invalidates dest. The same gain/mapped samples remain in
+    // our owned staging storage for the source-specific diagnostic observer.
     if (!checked(render_->ReleaseBuffer(written, 0),"ReleaseBuffer")) return false;
+    if(got)pipeline.observeRenderedPcm(channelMix_?mixed_.data():chunk_.data(),got,outputFormat_.channels,padding);
     liveGap_.submitted(got);
     if(written>got)std::fill(lastRaw_.begin(),lastRaw_.end(),0);
     {

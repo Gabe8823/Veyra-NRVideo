@@ -99,6 +99,20 @@ int main(int argc,char** argv){
     unsigned checks=0,failures=0;
     auto check=[&](bool ok,const char* name){++checks;if(!ok)++failures;std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n';};
     try{
+        // Adversarial model: the video target asks to consume 0.5% faster
+        // forever, while the physical input arrives at the endpoint rate.
+        // A clock-only controller drains 20 ms to zero; the production guard
+        // retains the reserve without resetting/dropping waveform samples.
+        double reserve=20,ppm=0,minimum=reserve,unguarded=20;
+        for(unsigned i=0;i<2400;++i){
+            ppm=captureSafeCorrectionPpm(-5000,ppm,reserve,20);
+            reserve+=250*ppm/1000000;minimum=std::min(minimum,reserve);
+            unguarded+=250*(-5000.0)/1000000;
+        }
+        check(minimum>=19.99&&unguarded<0,"unattainable early video target cannot consume live scheduling reserve");
+        check(captureSafeCorrectionPpm(-5000,-5000,12,20)>0,"low reservoir overrides negative slew before another underrun");
+        check(captureSafeCorrectionPpm(-3000,-3000,40,20)==-3000,"healthy queued audio can still catch up smoothly");
+        check(captureSafeCorrectionPpm(3000,0,20,20)==250,"positive correction retains bounded slew with healthy reserve");
         for(unsigned rate:{44100u,48000u})for(unsigned channels:{2u,6u})for(double hz:{1000.,4000.,8000.,16000.}){
             const auto reference=render(rate,channels,hz,480,false);
             const auto product=render(rate,channels,hz,480,true);

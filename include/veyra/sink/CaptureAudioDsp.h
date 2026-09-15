@@ -16,6 +16,15 @@ private:
     bool prepared_=false;
 };
 struct CaptureSampleStats {float peak=0;uint64_t nonFinite=0,overRange=0;};
+// Clock alignment cannot consume the live renderer's scheduling reserve.
+// Negative SWR compensation makes fewer output samples. At the latency floor,
+// chasing an unachievable earlier PTS otherwise causes periodic endpoint gaps.
+inline double captureSafeCorrectionPpm(double requested,double current,double queuedMs,double reserveMs){
+    const double slewed=current+std::clamp(requested-current,-250.0,250.0);
+    const double reservoirLimit=std::clamp((reserveMs-queuedMs)*500.0,-5000.0,5000.0);
+    // Safety overrides the downward slew immediately; keep the FIR history.
+    return std::clamp(std::max(slewed,reservoirLimit),-5000.0,5000.0);
+}
 // Float PCM can legitimately exceed unity before final user gain/downmix.
 // Do not introduce block AGC or clamp finite samples in the conversion stage.
 inline CaptureSampleStats inspectCapturePcm(float* samples,size_t count){

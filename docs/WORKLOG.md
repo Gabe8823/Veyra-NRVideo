@@ -2251,3 +2251,17 @@ VideoExportJob修正视频包失败仍计数、检查关闭刷新、细分编码
 实际构建脚本scrub-nr-export-build系列exit0；shader45秒上限exit0、真实NR参数120秒上限exit0、最终GUI24秒/55秒上限exit0；前两次GUI测试失败及修正原因保留在对应文档。真实3600帧文件锁测试export-lock-final在全部解码通过后得到Windows32，并正确报告保存失败；export-corrupt-output破坏尾包后正确拒绝成功，两项各120秒上限exit0。computer-use实际点击导出按钮，观察另存为窗口及默认名字，取消未导出。
 
 完整 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.ps1 -Root . -BuildDirectory out/build/audio-continuity-repair-20260915` exit0：`logs/delivery/582eaf50540a4f2f82abf2b7b82b3cfc/result.json`。实际NR/NVOF、原生4K、GUI/图片、H264/HEVC4K2X导出/音轨/取消通过，采集待实卡。候选EXE SHA256 `E0FE742B3EC7B83BEA18390EA7E61472D5CBB925F8DC0A6809F925EE92DB86E9`，入口保持 `out/start-user-issues-candidate.cmd`。未改运行组件、SDK、版本或发布。反馈者99%根因尚缺原文件/日志，不能拿注入文件锁替代真实复现。后续继续独立的HDR转SDR曲线/色域修复。
+
+## 2026-09-15 采集卡音乐滋滋声：真实播放间隙修复
+
+用户将采集音频严重杂音提为最高优先级，并明确开启PS5音乐授权实卡录音；暂缓HDR色调映射。前置提交f7bc4eb，仍在codex/user-issues-repair-20260915。完整根因、修改清单与命令见 `docs/CAPTURE_AUDIO_BUZZ_REPAIR_2026-09-15.md`。
+
+物理USB3 Digital Audio输入48k/16bit/2ch/10ms。原始、SWR、pull、WASAPI提交四阶段录音表明转换和队列没有引入块断裂，但自动同步负ppm耗尽20ms播放储备；实际每周期少量缺样被Windows插入短静音，驱动时钟停顿使旧underrun计数仍为0。仅指定测试Veyra进程的Windows loopback，修复前5～20秒96处明显双声道归零断口、129零frame，1902次稳态写入padding全为0；修复后同长度0断口/0零frame，1899次稳态写入无padding=0。两段音乐非逐帧相同，不以RMS或峰值作音质分数。
+
+CaptureAudioDsp增加调度储备约束，CaptureAudioSession将输入/PCM/端点真实储备纳入速度校正，不让不可达到的更早画面目标饿死播放；保留连续SWR、原有20ms安全窗、有储备时的正常追赶。新增显式环境变量才开启的20秒有界诊断和capture-pcm-audit.py；默认不录音，不记录其他应用。WaveformTests增加反例测试。
+
+最终构建 `cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0，`logs/audio-buzz-final-build-20260915.log`。waveform测试51/0，真实静音WASAPI capture_audio全模式/延迟/重建/恢复/容量回归exit0（各60秒上限）。实卡NR+FG运行32秒、进程回录28秒；一次修复后测试因用户另一份Veyra占用，Run=0x800705AA且录音为空，明确失败，用户关闭后after-b通过，失败记录保留。独立录音分析JSON见audio-buzz-before/after-audit-20260915，实际SDK返回值在录音应用日志及delivery原始日志。
+
+完整delivery同上命令exit0，`logs/delivery/3c3099c2022d4272a439d63b3062363b/result.json`，46.48秒，实际NR/NVOF/原生4K/播放控制/图片/导出音轨通过。候选EXE SHA256 `912FECDF30FE385BC33F1A6272EF8DF8E695B43F1D76F650AC2B521422CEBF93`，`out/start-user-issues-candidate.cmd`。运行组件/SDK/配置/录音不提交Git，没有push或发布。本机回录消除了已复现的间隙，用户最终听感及其他卡型号尚未验收。
+
+持续漂移 `veyra_capture_audio_tests.exe --drift-slow` 经run-short-test、150秒上限，日志 `logs/audio-buzz-drift-slow-20260915.stdout.log` exit0。实际120秒/输入慢0.1%/静音WASAPI，软件时差绝对值P95=4.279ms，missing=0、resets=1（启动）、队列高水位89.646ms、稳态underrun=0，未出现累计多秒延迟。不是声学延迟证明。下一步仅交用户试听确认本次采集杂音，不据此宣称所有卡已修好。
