@@ -2207,3 +2207,15 @@ WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer
 再执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.ps1 -Root . -BuildDirectory out/build/audio-continuity-repair-20260915` exit0，结果 `logs/delivery/3c32cadc5f774f6eaae43efee5d02211/result.json`，真实NR/NVOF、4K导出等短测通过；不能替代问题设备实测。EXE SHA256 `EFA748C7F7D64DF3E9ECE814CE56D2015BC976192F00195443C2B0E17A8EDA96`，入口 `out/start-user-issues-candidate.cmd`。git diff --check通过；版本、runtime及发布状态不变。
 
 下一步唯一用户验收：同原视频、关闭所有效果对照新候选。未核对其他播放器ICC/驱动视频增强/显示设置，不能宣称所有播放器屏幕像素绝对相同，也不能将本次SDR修复扩大为全部HDR发灰根治。该修复与此前14项候选一并作为当前独立分支的本地可回退记录，原基线6206b5a保留，不push、不发布。
+
+## 2026-09-15 HDR发灰端到端排查
+
+用户要求继续排查HDR，不知道反馈时实际是原生HDR还是转SDR。沿用 `8812e94` 在独立分支施工。新增 `HdrNativeRoundTripCases.h`，16组覆盖PQ/HLG、full/limited、平面10bit/P010、FP16 scRGB/RGB10 PQ，包含近黑、彩色、宽色域与最高10000尼特参考信号。通过 `VideoPresenter::presentedResourceForTest` 读取真实交换链缓冲作数值对照；该接口只供测试，无生产回读。PQ→scRGB最大相对误差0.0868%，PQ→RGB10 0.524%，HLG分别0.0893%/0.648%，图输出与呈现缓冲精确一致。证据 `logs/hdr-native-hlg-audit-20260915.stdout.log`，90秒上限exit0。
+
+增强短测：`veyra_hdr_enhancement_tests.exe 1` exit0、NR20帧、高光1003.75尼特；`... 3` 最终日志pass1、NR20/SR20/生成18、高光998.932尼特，用户中断后工具句柄消失，确认进程退出并读取最终日志，没有虚报无法回取的进程exit码。`... 1 0 out/hdr-audio-fixtures/pq-tagged-51.mp4 1` 90秒上限exit0、实际硬解文件及NR20帧。分别见 `logs/hdr-audit-nr-20260915.stdout.log`、`hdr-audit-sr-fg-20260915.stdout.log`、`hdr-audit-file-hardware-20260915.stdout.log`。NGX执行及基底身份、JXR、有限高光检查真实通过；本地fixture不是反馈者电影，不代表完整实际画质验收。
+
+确认HDR→SDR使用固定1000尼特/203参考白肩部和简单色域裁切，未依据内容峰值调整；这是已有策略的局限，不能直接判成全部HDR发灰根因。原生HDR没有复现SDR先前的BT.1886/sRGB曲线错误。本轮不调整HDR曲线或对比度。新增 `MediaFileSource` 首帧母版亮度/MaxCLL/MaxFALL来源日志，未知-1；`EnhanceGraph` 记录实际HDR输入、工作单位、输出和tone-map策略，不让通用SDR workingTransfer字段误导HDR诊断。
+
+初次新增测试引用不存在的makeReadbackBuffer构建失败后修正；固定0.1尼特中性容差在10000尼特FP16下超出格式精度，改按相对精度阈值，原失败日志保留。完整 `cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0（38/38），日志 `logs/hdr-audit-product-build-20260915.log`。最终GUI无增强HDR文件3秒短测，30秒上限exit0，`logs/hdr-audit-gui-20260915.log`。仅诊断和测试接口变更，未重跑完整delivery；git diff --check通过。
+
+候选EXE SHA256 `1CAC34939919C19EEF1FF271857159E8786AD2EF1BA7FCA5CBD6EBE394DC6321`，原候选入口保持。完整结论及后续有证据再改映射的方案见 `docs/HDR_GRAY_CHAIN_AUDIT_2026-09-15.md`。下一条唯一任务：取得问题HDR片段和新日志，依据hdr-route区分原生HDR/转SDR，量化同帧变化再修映射，不凭主观发灰统一改gamma。未执行反馈者屏幕测光、实卡/PS5或未知HDR素材，未发布或变更运行组件。

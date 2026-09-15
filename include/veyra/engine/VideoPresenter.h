@@ -15,6 +15,9 @@ public:
     void close();
     // Explicit integration-test capture only; never called by playback/export.
     bool readPresentedFrameForTest(gfx::D3D12DeviceContext&,gfx::CommandSlotRing&,sink::RgbaImage&);
+    // Test-only borrowed buffer reference for lossless HDR readback. Caller
+    // drains the queue and releases this before resize/close; no playback use.
+    Microsoft::WRL::ComPtr<ID3D12Resource> presentedResourceForTest() const;
     uint64_t submittedCount() const {return sink_.presentCount();}
     uint64_t xessGeneratedCount() const {return sink_.xess()?sink_.xess()->generatedCount():0;}
     uint64_t xessPresentedCount() const {return sink_.xess()?sink_.xess()->presentedCount():0;}

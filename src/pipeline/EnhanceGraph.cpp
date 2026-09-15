@@ -714,6 +714,14 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         veyra::log::error("hdr","Unsupported PQ/HLG colorimetry: requires signaled/fallback BT2020 NCL and BT2020 primaries");return false;
     }
     if(reset||!realFrameIndex_)veyra::log::info("color",std::format("range={} assumed={} matrix={} assumed={} transfer={} assumed={} display709={} preserveSdrCodes={} workingTransfer={}",int(resolved.range),resolved.rangeAssumed,int(resolved.matrix),resolved.matrixAssumed,int(resolved.transfer),resolved.transferAssumed,resolved.displayReferred709,resolved.preserveSdrCodeValues,workingTransferCode(resolved)));
+    if(resolved.isHdrPath()&&(reset||!realFrameIndex_)){
+        veyra::log::info("hdr-route",std::format("input={} range={} matrix=BT2020-NCL primaries=BT2020 decode={} working={} output={} toneMap={} hdrReferenceWhiteNits=203 hlgReferencePeakNits=1000; SDR workingTransfer field is unused for PQ/HLG",
+            resolved.transfer==TransferFunction::HLG?"HLG":"PQ",resolved.range==ColorRange::Full?"full":"limited",
+            resolved.transfer==TransferFunction::HLG?"inverse-OETF+OOTF-gamma1.2":"ST2084-EOTF-absolute-nits",
+            desc_.hdrOutput?"linear-BT709-scRGB-1=80nits":"linear-BT709-SDR-relative",
+            hdr10Output()?"PQ-BT2020-RGB10":desc_.hdrOutput?"scRGB-FP16":"sRGB-RGB8",
+            desc_.hdrOutput?"none":"fixed-luminance-shoulder-1000nits+RGB-gamut-clip"));
+    }
     if (resolved.isHdrPath()&&(!desc_.hdrInput||desc_.rgbInput||desc_.yuy2Input)) {
         veyra::log::error("graph", "HDR input requires an explicit YUV HDR contract; RGB/YUY2 HDR ingress is unsupported"); return false;
     }

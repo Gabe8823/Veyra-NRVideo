@@ -102,4 +102,9 @@ bool VideoPresenter::readPresentedFrameForTest(gfx::D3D12DeviceContext& ctx,gfx:
     return SUCCEEDED(sink_.swapChain()->GetBuffer(lastBuffer_,IID_PPV_ARGS(&buffer)))&&sink::readRgba8(ctx,ring,buffer.Get(),image);
 }
 void VideoPresenter::close(){hasPresented_=false;gpuTimer_.close();rtvs_.Reset();pass_={};sink_.shutdown();}
+Microsoft::WRL::ComPtr<ID3D12Resource> VideoPresenter::presentedResourceForTest() const {
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    if(hasPresented_&&sink_.swapChain())sink_.swapChain()->GetBuffer(lastBuffer_,IID_PPV_ARGS(&buffer));
+    return buffer;
+}
 }

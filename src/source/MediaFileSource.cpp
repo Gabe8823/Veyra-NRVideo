@@ -13,6 +13,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/mastering_display_metadata.h>
 }
 
 namespace veyra::source {
@@ -322,6 +323,23 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
             info_.videoCodecName, info_.videoPixelFormatName, decoder_.hardwareActive(), out.colorInfo.isHdrPath(),
             static_cast<int>(out.colorInfo.matrix), static_cast<int>(out.colorInfo.transfer),
             static_cast<int>(out.colorInfo.range), static_cast<int>(out.colorInfo.chromaLocation)));
+        if(out.colorInfo.isHdrPath()){
+            const auto* parameters=demuxer_.videoCodecParameters();
+            auto side=[&](AVFrameSideDataType frameType,AVPacketSideDataType packetType,size_t minimum,const char*& origin)->const uint8_t*{
+                if(const auto* data=av_frame_get_side_data(frame,frameType);data&&data->size>=minimum){origin="frame";return data->data;}
+                if(parameters)if(const auto* data=av_packet_side_data_get(parameters->coded_side_data,parameters->nb_coded_side_data,packetType);data&&data->size>=minimum){origin="stream";return data->data;}
+                origin="unavailable";return nullptr;
+            };
+            const char *masteringOrigin=nullptr,*contentOrigin=nullptr;double minNits=-1,maxNits=-1;int64_t maxCll=-1,maxFall=-1;
+            if(const auto* data=side(AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,AV_PKT_DATA_MASTERING_DISPLAY_METADATA,sizeof(AVMasteringDisplayMetadata),masteringOrigin)){
+                const auto& value=*reinterpret_cast<const AVMasteringDisplayMetadata*>(data);
+                if(value.has_luminance&&value.min_luminance.den>0&&value.max_luminance.den>0){minNits=av_q2d(value.min_luminance);maxNits=av_q2d(value.max_luminance);}
+            }
+            if(const auto* data=side(AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,AV_PKT_DATA_CONTENT_LIGHT_LEVEL,sizeof(AVContentLightMetadata),contentOrigin)){
+                const auto& value=*reinterpret_cast<const AVContentLightMetadata*>(data);maxCll=value.MaxCLL;maxFall=value.MaxFALL;
+            }
+            log::info("hdr-metadata",std::format("masteringSource={} masteringMinNits={} masteringMaxNits={} contentSource={} maxCLL={} maxFALL={} (-1=unavailable; 0 content level=unspecified); diagnostic only, not applied to fixed SDR tone map",masteringOrigin,minNits,maxNits,contentOrigin,maxCll,maxFall));
+        }
     }
     out.sourceEpoch = epoch_;
 
