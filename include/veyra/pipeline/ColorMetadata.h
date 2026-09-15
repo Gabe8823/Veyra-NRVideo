@@ -4,9 +4,18 @@ extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/mastering_display_metadata.h>
 }
 namespace veyra::pipeline {
 inline ColorDescription resolveFrameColor(const AVFrame& frame,ColorDescription c={}){
+    if(const auto* data=av_frame_get_side_data(&frame,AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);data&&data->size>=sizeof(AVMasteringDisplayMetadata)){
+        const auto* m=reinterpret_cast<const AVMasteringDisplayMetadata*>(data->data);
+        if(m->has_luminance&&m->max_luminance.den>0){const double n=av_q2d(m->max_luminance);if(n>0&&n<=10000)c.hdrMasteringPeakNits=float(n);}
+    }
+    if(const auto* data=av_frame_get_side_data(&frame,AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);data&&data->size>=sizeof(AVContentLightMetadata)){
+        const auto* m=reinterpret_cast<const AVContentLightMetadata*>(data->data);
+        if(m->MaxCLL>0&&m->MaxCLL<=10000&&m->MaxFALL<=m->MaxCLL){c.hdrMaxCllNits=float(m->MaxCLL);c.hdrMaxFallNits=float(m->MaxFALL);}
+    }
     switch(frame.chroma_location){
     case AVCHROMA_LOC_LEFT:c.chromaLocation=ChromaLocation::Left;break;
     case AVCHROMA_LOC_CENTER:c.chromaLocation=ChromaLocation::Center;break;

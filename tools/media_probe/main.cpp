@@ -77,7 +77,7 @@ bool createYuvToRgbPipeline(veyra::gfx::D3D12DeviceContext& context, uint32_t wi
         return false;
     }
 
-    // Root signature: b0 (8 constants) + SRV table (3) + UAV table (1).
+    // Root signature: b0 (12 constants) + SRV table (3) + UAV table (1).
     D3D12_DESCRIPTOR_RANGE1 srvRange{};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 3;
@@ -97,7 +97,7 @@ bool createYuvToRgbPipeline(veyra::gfx::D3D12DeviceContext& context, uint32_t wi
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Constants.ShaderRegister = 0;
     rootParams[0].Constants.RegisterSpace = 0;
-    rootParams[0].Constants.Num32BitValues = 8;
+    rootParams[0].Constants.Num32BitValues = 12;
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -253,9 +253,9 @@ bool dispatchYuvToRgb(veyra::gfx::D3D12DeviceContext& context,
     // colorParams: limitedRange=1, matrix709=1, transferSRGB=1, padding
     const float colorParams[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
     const uint32_t dims[4] = { pipeline.width, pipeline.height, 0, 0 };
-    const float constants[8] = { colorParams[0], colorParams[1], colorParams[2], colorParams[3],
-        static_cast<float>(dims[0]), static_cast<float>(dims[1]), 0.0f, 0.0f };
-    list->SetComputeRoot32BitConstants(0, 8, constants, 0);
+    const float constants[12] = { colorParams[0], colorParams[1], colorParams[2], colorParams[3],
+        static_cast<float>(dims[0]), static_cast<float>(dims[1]), 0.0f, 0.0f, 1000.0f, 203.0f, 0.0f, 0.0f };
+    list->SetComputeRoot32BitConstants(0, 12, constants, 0);
     list->SetComputeRootDescriptorTable(1, pipeline.srvHeap->GetGPUDescriptorHandleForHeapStart());
     // UAV table at slot 2 in the same heap.
     D3D12_GPU_DESCRIPTOR_HANDLE uavGpu = { pipeline.srvHeap->GetGPUDescriptorHandleForHeapStart().ptr + 2ull * pipeline.srvIncrement };

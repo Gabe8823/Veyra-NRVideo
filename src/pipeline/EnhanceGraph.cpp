@@ -1,4 +1,5 @@
 #include "veyra/pipeline/ColorMetadata.h"
+#include "veyra/pipeline/HdrToneMap.h"
 // EnhanceGraph implementation - the real GPU chain migrated from
 // tools/player_probe main.cpp (R3.2). Ordering constraints preserved from the
 // injected-layer era evidence: committed resources and NGX/NVOF objects are
@@ -536,7 +537,7 @@ bool EnhanceGraph::createComputePasses()
     if(!downsamplePass_.loadShader("NrDownsample.dxil",cs)||!downsamplePass_.create(context_.device(),cs,2,1,1))return false;
     if(!residualPass_.loadShader("NrResidualComposite.dxil",cs)||!residualPass_.create(context_.device(),cs,4,3,1,24))return false;
     if(!flowAdaptPass_.loadShader("FlowAdapt.dxil",cs)||!flowAdaptPass_.create(context_.device(),cs,3,1,1))return false;
-    if (!yuvPass_.loadShader("YuvToLinearRgb.dxil", cs) || !yuvPass_.create(context_.device(), cs, 8, 2, 1)) return false;
+    if (!yuvPass_.loadShader("YuvToLinearRgb.dxil", cs) || !yuvPass_.create(context_.device(), cs, 8, 2, 1, 12)) return false;
     if((desc_.rgbInput||desc_.yuy2Input)&&(!rgbPass_.loadShader(desc_.yuy2Input?"Yuy2ToLinear.dxil":"RgbToLinear.dxil",cs)||!rgbPass_.create(context_.device(),cs,8,1,1)))return false;
     if (!encPass_.loadShader("ParityEncode.dxil", cs) || !encPass_.create(context_.device(), cs, 8, 1, 1)) return false;
     if (!decPass_.loadShader("ParityDecode.dxil", cs) || !decPass_.create(context_.device(), cs, 8)) return false;
@@ -706,6 +707,10 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         return false;
     }
     const auto resolved=resolveFrameColor(*frame,color?*color:ColorDescription{});
+    if(resolved.isHdrPath()&&!desc_.hdrOutput&&!toneMapPeakNits_){
+        const auto peak=hdrToneMapPeak(resolved);toneMapPeakNits_=peak.nits;
+        log::info("hdr-tone-map",std::format("method=BT2390-luminance sourcePeakNits={} peakSource={} targetPeakNits=203 blackNits=0 gamut=neutral-ray-soft-knee staticPerGraph=1",peak.nits,peak.source));
+    }
     if(desc_.hdrInput&&!resolved.isHdrPath()){
         veyra::log::error("hdr","HDR source transfer changed to SDR; reopen/rebuild required");return false;
     }
@@ -720,7 +725,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             resolved.transfer==TransferFunction::HLG?"inverse-OETF+OOTF-gamma1.2":"ST2084-EOTF-absolute-nits",
             desc_.hdrOutput?"linear-BT709-scRGB-1=80nits":"linear-BT709-SDR-relative",
             hdr10Output()?"PQ-BT2020-RGB10":desc_.hdrOutput?"scRGB-FP16":"sRGB-RGB8",
-            desc_.hdrOutput?"none":"fixed-luminance-shoulder-1000nits+RGB-gamut-clip"));
+            desc_.hdrOutput?"none":"BT2390-luminance+neutral-ray-gamut-compression"));
     }
     if (resolved.isHdrPath()&&(!desc_.hdrInput||desc_.rgbInput||desc_.yuy2Input)) {
         veyra::log::error("graph", "HDR input requires an explicit YUV HDR contract; RGB/YUY2 HDR ingress is unsupported"); return false;
@@ -921,11 +926,11 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         rgbPass_.bind(list,c,gpuHandleOf(rgbPass_,0).ptr,gpuHandleOf(rgbPass_,1).ptr);
         list->Dispatch((srcW_+15)/16,(srcH_+15)/16,1);
     }else{
-        const float constants[8] = { resolved.range==ColorRange::Full?0.0f:1.0f,
+        const float constants[12] = { resolved.range==ColorRange::Full?0.0f:1.0f,
             resolved.matrix==YuvMatrix::BT2020NCL?2.0f:resolved.matrix==YuvMatrix::BT601?0.0f:1.0f,
             resolved.transfer==TransferFunction::HLG?5.0f:resolved.transfer==TransferFunction::PQ?4.0f:float(workingTransferCode(resolved)), (nv12Texture?(nv12Texture->GetDesc().Format==DXGI_FORMAT_P010?1.0f:0.0f):(desc_.captureBitDepth==16?2.0f:desc_.wideYuvInput()?1.0f:0.0f)),
             uintBits(srcW_), uintBits(srcH_), uintBits((desc_.hdrOutput?1u:0u)|(resolved.primaries==ColorPrimaries::BT2020?2u:0u)),
-            uintBits(resolved.reconstructChroma?std::max(1u,unsigned(resolved.chromaLocation)):0u) };
+            uintBits(resolved.reconstructChroma?std::max(1u,unsigned(resolved.chromaLocation)):0u),toneMapPeakNits_,203.0f,0,0 };
         yuvPass_.bind(list, constants, gpuHandleOf(yuvPass_, nv12Texture ? 3 + parity * 2 : 0).ptr, gpuHandleOf(yuvPass_, 2).ptr);
         list->Dispatch((srcW_ + 15) / 16, (srcH_ + 15) / 16, 1);
     }
@@ -1288,30 +1293,37 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     return true;
 }
 
-bool EnhanceGraph::resolveGeneration(FrameOutputs& out)
+bool EnhanceGraph::resolveFrame(FrameOutputs& out,uint32_t index)
 {
-    // Real-only batches also need a completed GPU fence before a consumer
-    // can report completed processing. This is a nonblocking poll.
-    const auto completed=context_.fence()->GetCompletedValue();
-    for(uint32_t i=0;i<out.batch.count;++i)
-        if(out.batch.frames[i].lease&&completed<out.batch.frames[i].lease->readyFence)return false;
-    if(!out.hasGenerated)return true;
-    if(context_.fence()->GetCompletedValue()<out.genFenceValue)return false;
-    bool anyValid=false;
-    for(uint32_t i=0;i<out.batch.count;++i){
-    auto& frame=out.batch.frames[i];if(frame.kind!=FrameKind::Generated)continue;
-    if(frame.validity!=GenerationValidity::Pending){anyValid|=frame.validity==GenerationValidity::Valid;continue;}
+    if(index>=out.batch.count)return false;
+    auto& frame=out.batch.frames[index];
+    if(!frame.lease||context_.fence()->GetCompletedValue()<frame.lease->readyFence)return false;
+    if(frame.kind!=FrameKind::Generated||frame.validity!=GenerationValidity::Pending)return true;
     void* data=nullptr;D3D12_RANGE range{0,4};
     HRESULT hr=fgDisableReadback_[frame.lease->slot]->Map(0,&range,&data);
-    if(FAILED(hr)){frame.validity=GenerationValidity::Failed;out.hasGenerated=false;veyra::log::error("fg-status",std::format("Map hr=0x{:X}",unsigned(hr)));return true;}
+    if(FAILED(hr)){frame.validity=GenerationValidity::Failed;veyra::log::error("fg-status",std::format("Map hr=0x{:X}",unsigned(hr)));return true;}
     const bool disabled=*static_cast<uint8_t*>(data)!=0;
     const bool rejected=disabled||out.contentDuplicate;
     D3D12_RANGE written{0,0};fgDisableReadback_[frame.lease->slot]->Unmap(0,&written);
     frame.validity=rejected?GenerationValidity::Disabled:GenerationValidity::Valid;
-    anyValid|=!rejected;if(rejected)++metrics_.fgDisabledFrames;else ++metrics_.fgGeneratedFrames;
+    if(rejected)++metrics_.fgDisabledFrames;else ++metrics_.fgGeneratedFrames;
     if(veyra::log::verboseFrameLogs())veyra::log::info("fg-status",std::format("batch={} frame={} epoch={} revision={} subframe={} fence={} disable={} valid={}",out.batch.batchId,out.realFrameIndex,out.batch.identity.epoch,out.batch.identity.settingsRevision,frame.subframe,frame.lease->readyFence,disabled,!rejected));
+    return true;
+}
+
+bool EnhanceGraph::resolveGeneration(FrameOutputs& out)
+{
+    bool complete=true,anyValid=false;
+    for(uint32_t i=0;i<out.batch.count;++i){
+        if(!resolveFrame(out,i))complete=false;
+        const auto& frame=out.batch.frames[i];
+        anyValid|=frame.kind==FrameKind::Generated&&frame.validity==GenerationValidity::Valid;
     }
-    out.hasGenerated=anyValid;return true;
+    // Warmup evaluates may have no exposed generated leases, but their status
+    // and resources must finish before full-batch completion is reported.
+    if(context_.fence()->GetCompletedValue()<out.genFenceValue)complete=false;
+    if(complete)out.hasGenerated=anyValid;
+    return complete;
 }
 
 bool EnhanceGraph::applySettings(const engine::EnhancementSettings& s){
@@ -1434,6 +1446,7 @@ void EnhanceGraph::shutdown()
     encPass_ = ComputePass{};
     blitPass_ = ComputePass{};hdrVideoSrPass_={};
     yuvPass_ = ComputePass{};
+    toneMapPeakNits_=0;
     densifyPass_ = ComputePass{};
     confTex_.Reset();
     flowTex_.Reset();

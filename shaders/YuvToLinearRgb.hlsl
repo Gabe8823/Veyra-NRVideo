@@ -3,11 +3,13 @@
 // SRVs; the dispatch covers the full frame. Color metadata (range/matrix/
 // transfer) arrives as root constants set per frame from FFmpeg stream data.
 #include "HdrColor.hlsli"
+#include "HdrToSdr.hlsli"
 
 cbuffer YuvParams : register(b0)
 {
     float4 colorParams0; // x=limitedRange y=matrix709 z=transferSRGB w=padding
     uint4 yuvDimensions; // x=width y=height z=bit0 nativeHDR, bit1 BT2020 primaries; w=chroma location
+    float4 toneMapParams; // x=validated source peak nits, y=SDR target peak nits
 };
 
 Texture2D<float> lumaPlane : register(t0);   // R8_UNORM or R16_UNORM
@@ -107,11 +109,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         float3 linear709=mul(float3x3(1.660491,-0.587641,-0.072850,-0.124550,1.132900,-0.008349,-0.018151,-0.100579,1.118730),nits);
         if((yuvDimensions.z&1)!=0)rgb=linear709/80.0; // scRGB: 1.0 = 80 nits.
         else{
-            // Stable luminance shoulder, fixed 1000-nit reference peak.
-            // This is SDR mapping, never advertised as native HDR output.
-            float3 c=max(linear709/203.0,0.0);float lum=dot(c,float3(.2126,.7152,.0722));
-            float peak=1000.0/203.0;float mapped=lum*(1.0+lum/(peak*peak))/(1.0+lum);
-            rgb=saturate(c*(mapped/max(lum,1e-6)));
+            rgb=HdrToSdr(linear709,toneMapParams.x,toneMapParams.y);
         }
     } else if (colorParams0.z > 2.5) {
         rgb = pow(rgb, 2.4); // BT.1886 EOTF, ideal black SDR display intent.

@@ -148,6 +148,9 @@ public:
     // Nonblocking. The scheduler polls at a GPU-ready/deadline boundary; no
     // full image readback and no waits inside the graph's individual passes.
     bool resolveGeneration(FrameOutputs& out);
+    // Resolve one leased frame without waiting for later MFG subframes.
+    // Full-batch consumers (export/file accounting) still use resolveGeneration.
+    bool resolveFrame(FrameOutputs& out,uint32_t index);
     bool applySettings(const engine::EnhancementSettings&);
 
     // s10 ownership-order teardown: NVOF fence drain must happen BEFORE this
@@ -288,6 +291,7 @@ private:
     std::vector<uint8_t> nv12Buf_;
 
     ComputePass yuvPass_, encPass_, decPass_, blitPass_, uploadPass_, densifyPass_;
+    float toneMapPeakNits_=0; // latched per graph/source; never varies with frame brightness
     ComputePass rgbPass_,hdrVideoSrPass_;
     ComputePass downsamplePass_,residualPass_,flowAdaptPass_;
     DescriptorStager stager_;

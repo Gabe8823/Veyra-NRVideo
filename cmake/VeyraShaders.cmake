@@ -34,11 +34,11 @@ function(veyra_add_compute_shader target_name shader_name)
     OUTPUT "${output}"
     COMMAND "${DXC_EXE}" -T cs_6_0 -E main ${config_flags}
             -Fo "${output}" "${source}"
-    DEPENDS "${source}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrColor.hlsli"
+    DEPENDS "${source}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrColor.hlsli" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrToSdr.hlsli"
     COMMENT "dxc ${shader_name}.hlsl (${CMAKE_BUILD_TYPE})"
     VERBATIM)
   add_custom_target(${target_name} DEPENDS "${output}")
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrColor.hlsli")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrColor.hlsli" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/HdrToSdr.hlsli")
 endfunction()
 
 # Compiles a vertex+pixel shader pair (entry vsMain/psMain) into two DXIL

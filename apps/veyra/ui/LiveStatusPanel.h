@@ -40,7 +40,8 @@ inline LRESULT CALLBACK proc(HWND h,UINT message,WPARAM wp,LPARAM lp){
         rows.emplace_back(L"处理范围",xess?L"不含XeSS内部FG":L"不含输入颜色、输出、声音和呈现等待");
         rows.emplace_back(L"平均范围",L"总计按源帧；单项按执行次数");
         rows.emplace_back(L"光流范围",L"含光流GPU依赖等待");
-        rows.emplace_back(L"实际呈现",fps(xess?f.xessSdkSubmitFps:f.presentSubmitFps));
+        rows.emplace_back(xess?L"SDK提交（非屏幕实测）":L"显示提交（非屏幕实测）",fps(xess?f.xessSdkSubmitFps:f.presentSubmitFps));
+        if(!xess)rows.emplace_back(L"原帧 / 生成帧提交",std::format(L"{:.1f} / {:.1f} fps",f.realPresentFps,f.generatedPresentFps));
         rows.emplace_back(L"请求目标（非实测）",s.nominalSourceFps>0?std::format(L"{:.1f} fps",s.nominalSourceFps*(s.captureHalfRate?.5:1)*s.applied.multiplier):L"未确定");
         std::wstring progress=!playing?s.status:s.applying?L"正在应用设置":s.fgBudgetLimited?L"部分补帧未达截止时间":L"播放中";
         if(playing&&!s.applying&&s.remotePlay){
@@ -103,7 +104,7 @@ inline LRESULT CALLBACK proc(HWND h,UINT message,WPARAM wp,LPARAM lp){
         rows.emplace_back(L"原帧软件驻留 · 平均",playing?ms(f.softwareLatencyMs):L"未测");
         rows.emplace_back(L"原帧软件驻留 · P95",playing?ms(f.softwareLatencyP95Ms):L"未测");
         rows.emplace_back(L"估计基线",L"理想直接播放 · 非双路实测");
-        rows.emplace_back(L"GPU完成产出",fps(f.outputCompletedFps));
+        rows.emplace_back(L"GPU完成产出（含过期）",fps(f.outputCompletedFps));
         rows.emplace_back(L"源帧处理完成",fps(f.sourceCompletedFps));
         rows.emplace_back(L"有效生成（含过期）",xess?L"SDK内部不可测":fps(f.validGeneratedFps));
         rows.emplace_back(L"采集覆盖 / 补帧过期",std::format(L"{} / {}",f.counters.mailboxOverwritten,f.counters.generatedExpiredAfterEval));

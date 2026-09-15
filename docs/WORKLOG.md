@@ -2265,3 +2265,23 @@ CaptureAudioDsp增加调度储备约束，CaptureAudioSession将输入/PCM/端�
 完整delivery同上命令exit0，`logs/delivery/3c3099c2022d4272a439d63b3062363b/result.json`，46.48秒，实际NR/NVOF/原生4K/播放控制/图片/导出音轨通过。候选EXE SHA256 `912FECDF30FE385BC33F1A6272EF8DF8E695B43F1D76F650AC2B521422CEBF93`，`out/start-user-issues-candidate.cmd`。运行组件/SDK/配置/录音不提交Git，没有push或发布。本机回录消除了已复现的间隙，用户最终听感及其他卡型号尚未验收。
 
 持续漂移 `veyra_capture_audio_tests.exe --drift-slow` 经run-short-test、150秒上限，日志 `logs/audio-buzz-drift-slow-20260915.stdout.log` exit0。实际120秒/输入慢0.1%/静音WASAPI，软件时差绝对值P95=4.279ms，missing=0、resets=1（启动）、队列高水位89.646ms、稳态underrun=0，未出现累计多秒延迟。不是声学延迟证明。下一步仅交用户试听确认本次采集杂音，不据此宣称所有卡已修好。
+
+## 2026-09-15 HDR映射候选完成与补帧产出/提交口径排查
+
+HDR修改ColorMetadata/FramePacket/MediaFileSource静态元数据继承，HdrToneMap源峰值选择与图内固定，YuvToLinearRgb/HdrToSdr亮度映射及同亮度色域压缩，EnhanceGraph根常量合同、CMake依赖及media_probe ABI；新增GPU颜色测试。详细命令、失败和SDK证据见 `docs/HDR_TO_SDR_MAPPING_REPAIR_2026-09-15.md`。首轮根常量参数错误导致黑输出并测试失败，已修正；file-c经150秒上限exit0，20组映射最大Y误差0.000526118、色度方向0.000390535，16组原生HDR通过；PQ2000nit软硬解一致，6组真实NR/SR/FG执行通过，NGX Init/CreateFeature 0x1 Success。此前EXE锁定链接失败和并行采集期间player-sync gate失败均保留记录，未冒充通过。
+
+用户反馈“受限却180fps”后，原日志session3/revision556证明GPU原帧60+生成120，但显示提交141至170fps，累计2780有效生成有360过期丢弃。AppShell主标签原读outputCompletedFps，状态判定读presentSubmitFps；本轮将标签统一为显示提交，LiveStatusPanel明确非屏幕实测/原帧与生成帧提交/产出含过期。没有改丢弃阈值掩盖欠速，实际采集3X过期原因仍待逐子帧时间验证，见 `docs/FG_OUTPUT_RATE_AUDIT_2026-09-15.md`。
+
+最终标准构建 `cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0，日志 `logs/fg-rate-display-build-20260915.log`。完整delivery命令沿用上文，exit0，`logs/delivery/6bade0b84d8449d89198cffa37453a2d/result.json`，原始应用日志 `logs/fg-rate-display-delivery-20260915.log`。实际NR/NVOF/4K/GUI/导出等通过，本次未运行用户并行采集；不冒充采集3X根治或其他硬件验收。`git diff --check` exit0，仅换行提示。
+
+标准候选SHA256 `888BC5E1ED098AD1E3A4C0188D58100452E31364DF45826267FAADB9C01C24E6`，入口 `out/start-user-issues-candidate.cmd`。运行组件/SDK/本机媒体保持源码Git外；未发布。下一项是采集3X补帧生成后过期的调度专项，不是重复改HDR对比度。
+
+### 2026-09-15 补帧受限与180fps口径修复
+
+用户反馈3X补帧受限但右侧180fps。`logs/fg-deadline-baseline-capture-20260915.log` 用同一采集参数 `capture:0:0:0 --nr --video-sr 2 --fg-multiplier 3 --smoke-seconds 32` 复现：有效生成3480、生成提交3060、过期420；batch442第一张已在截止后8.546ms就绪，决定时10.588ms，因整批resolve等待后续子帧而越过10ms容差。UI原先右侧读 `outputCompletedFps`，含过期产出；已改为 `presentSubmitFps`，详细面板明确显示提交与含过期产出。
+
+实现 `EnhanceGraph::resolveFrame`，按每个MFG子帧lease/fence独立解析有效状态；实时采集/串流按子帧就绪、PTS顺序提交，文件/导出仍使用完整 `resolveGeneration`。保留2批队列、consumer fence、原10ms过期规则和GPU资源状态，不放宽阈值或增加缓冲；不宣称实测延迟没有变化。新增 `fg-deadline`限频日志只记录CPU首次观测栅栏、截止/决定时间和是否整批ready，不冒充GPU精确终点或屏幕扫描率。
+
+修后同参数32秒 `logs/fg-progressive-capture-20260915.log` exit0：生成3478、提交3478、过期0、显示提交180fps；120秒持续采集 `logs/fg-progressive-capture-long-20260915.log` exit0：源7062、生成14050、提交14050、过期0、显示提交180fps，`failed=false`，无错误。既有 `veyra_presentation_worker_tests.exe`、`veyra_live_timing_tests.exe` 回归exit0，日志 `logs/fg-progressive-worker-tests-20260915.log`、`logs/fg-progressive-timing-tests-20260915.log`；新增逐帧行为由实卡对照验证。最终delivery exit0，结果 `logs/delivery/90feb52b7ed84cf19d92d64596d79f10/result.json`，47.91秒；未发布。
+
+最终候选SHA256 `02BBC51FF46A8DEBCCA9961BEC48500E2AA77FE62B238174172D4E238ACA6401`，入口沿用 `out/start-user-issues-candidate.cmd`。详细文件/命令/SDK结果及边界见FG_OUTPUT_RATE_AUDIT。回调至Present返回P95前后44.606/50.328ms，不能从丢帧改善推论屏幕延迟降低；真实屏幕与帧间均匀性尚未测量，下一步交用户同一组合游玩验收。HDR改动一同保留为本地可回退记录，运行库/SDK/媒体未入Git。

@@ -10,6 +10,7 @@
 #include "CaptureFormatGpuCases.h"
 #include "SdrColorGpuCases.h"
 #include "HdrNativeRoundTripCases.h"
+#include "HdrToneMapGpuCases.h"
 #include <iostream>
 #include <cmath>
 extern "C" {
@@ -20,7 +21,22 @@ int wmain(int argc,wchar_t** argv){
  CoInitializeEx(nullptr,COINIT_MULTITHREADED);
  gfx::D3D12DeviceContext ctx;gfx::CommandSlotRing ring;Status st;gfx::DeviceContextDesc dd;
  if(!ctx.initialize(dd,st)||!ring.initialize(ctx.device(),ctx.directQueue(),ctx.fence(),ctx.fenceEvent(),4,st))return 2;
- int failures=captureGpuCases(ctx,ring)+sdrColorGpuCases(ctx,ring)+hdrRoundTrip::run(ctx,ring);
+ int failures=captureGpuCases(ctx,ring)+sdrColorGpuCases(ctx,ring)+hdrRoundTrip::run(ctx,ring)+hdrToneTests::run(ctx,ring);
+ if(argc>1){
+  std::vector<uint8_t> software;const float expectedPeak=argc>2?float(_wtof(argv[2])):0;
+  for(bool hardware:{false,true}){
+   source::MediaFileSource source;source::SourceOpenDesc sd;sd.path=argv[1];sd.preferHardwareDecode=hardware;sd.d3d12Device=ctx.device();sd.d3d12Queue=ctx.directQueue();
+   bool ok=source.open(sd);pipeline::FramePacket packet;const AVFrame* frame=nullptr;
+   if(ok)ok=source.read(packet,&frame)==source::SourceReadStatus::Frame;
+   pipeline::EnhanceGraph graph(ctx,ring);pipeline::EnhanceGraphDesc gd;gd.sourceWidth=gd.workWidth=source.info().width;gd.sourceHeight=gd.workHeight=source.info().height;
+   gd.hdrInput=true;gd.enableNr=gd.enableSr=gd.enableFg=false;gd.noFeatures=true;
+   pipeline::EnhanceGraph::FrameOutputs out;sink::RgbaImage image;float selected=0;
+   if(ok){selected=pipeline::hdrToneMapPeak(packet.colorInfo).nits;ok=(frame->format==AV_PIX_FMT_D3D12)==hardware&&(!expectedPeak||selected==expectedPeak)&&graph.initialize(gd)&&graph.createViews()&&graph.process(frame,0,true,out,1,&packet.colorInfo)&&sink::readRgba8(ctx,ring,graph.videoFrameResource(out.videoSlot),image);}
+   unsigned maxDifference=0;if(ok){if(!hardware)software=image.pixels;else{ok=software.size()==image.pixels.size();if(ok)for(size_t i=0;i<software.size();++i)maxDifference=std::max(maxDifference,unsigned(std::abs(int(software[i])-int(image.pixels[i]))));ok&=maxDifference<=1;}}
+   std::cout<<"HDR_TONE_FILE hardware="<<hardware<<" selectedPeak="<<selected<<" expectedPeak="<<expectedPeak<<" softHardwareMaxCodeDifference="<<maxDifference<<" pass="<<ok<<std::endl;
+   failures+=!ok;out={};ring.drainQueue();graph.shutdown();source.close();
+  }
+ }
  for(bool hlg:{false,true})for(bool native:{false,true})for(bool planar:{false,true})for(bool full:{false,true}){
   pipeline::EnhanceGraph graph(ctx,ring);pipeline::EnhanceGraphDesc gd;
   gd.sourceWidth=gd.workWidth=64;gd.sourceHeight=gd.workHeight=32;gd.enableNr=gd.enableFg=gd.enableSr=false;gd.noFeatures=true;gd.hdrInput=true;gd.hdrOutput=native;
@@ -34,7 +50,7 @@ int wmain(int argc,wchar_t** argv){
   if(planar)for(unsigned y=0;y<16;++y)for(unsigned x=0;x<32;++x)reinterpret_cast<uint16_t*>(f->data[2]+y*f->linesize[2])[x]=512;
   pipeline::ColorDescription color;color.pixelFormat=pipeline::SourcePixelFormat::P010;color.transfer=hlg?pipeline::TransferFunction::HLG:pipeline::TransferFunction::PQ;color.matrix=pipeline::YuvMatrix::BT2020NCL;
   pipeline::EnhanceGraph::FrameOutputs out;bool ok=graph.process(f,0,true,out,1,&color);double error=0;
-  if(ok&&!native){sink::RgbaImage image;ok=sink::readRgba8(ctx,ring,graph.videoFrameResource(out.videoSlot),image);if(ok){for(unsigned i=0;i<3;++i){double l=nits[i]/203.0,p=1000.0/203.0,m=std::clamp(l*(1+l/(p*p))/(1+l),0.0,1.0);double expected=m<=.0031308?12.92*m:1.055*pow(m,1/2.4)-.055;double actual=image.pixels[(i*22+5)*4]/255.0;error=std::max(error,std::abs(expected-actual));}ok=error<.012;}}
+  if(ok&&!native){sink::RgbaImage image;ok=sink::readRgba8(ctx,ring,graph.videoFrameResource(out.videoSlot),image);if(ok){for(unsigned i=0;i<3;++i){double m=hdrToneTests::luminance(nits[i],1000);double expected=m<=.0031308?12.92*m:1.055*pow(m,1/2.4)-.055;double actual=image.pixels[(i*22+5)*4]/255.0;error=std::max(error,std::abs(expected-actual));}ok=error<.012;}}
   if(ok&&native){
    auto* texture=graph.videoFrameResource(out.videoSlot);auto desc=texture->GetDesc();D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};UINT64 size=0;ctx.device()->GetCopyableFootprints(&desc,0,1,0,&footprint,nullptr,nullptr,&size);
    D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=size;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;

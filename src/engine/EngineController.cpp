@@ -340,7 +340,9 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 bool real=false;
                 std::atomic<bool> ready=false;
                 Clock::time_point readyObserved{};
+                std::array<int64_t,4> frameReadyObserved{};
             };
+            int64_t nextFgDeadlineLog=0;
             std::vector<std::shared_ptr<CompletionWatch>> pendingCompletions;
             std::shared_ptr<FrameFlowWindow> frameFlow;
             const uint64_t runSessionId=[&]{std::lock_guard lock(mutex_);return snapshot_.sessionId;}();
@@ -401,6 +403,10 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 collectTimings();
                 for(auto it=pendingCompletions.begin();it!=pendingCompletions.end();){
                     auto& watch=**it;auto& batch=watch.output;
+                    const auto completedFence=ctx.fence()->GetCompletedValue();
+                    for(unsigned i=0;i<batch.batch.count;++i){const auto& item=batch.batch.frames[i];
+                        if(!watch.frameReadyObserved[i]&&item.lease&&completedFence>=item.lease->readyFence)watch.frameReadyObserved[i]=host100ns();
+                    }
                     if(!graph.resolveGeneration(batch)){++it;continue;}
                     // The GPU may finish between the first poll and resolve.
                     // Collect its timestamps before removing this watch.
@@ -907,11 +913,11 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                             unsigned left=0;for(unsigned i=s.next;i<batch.batch.count;++i)if(batch.batch.frames[i].kind!=pipeline::FrameKind::Generated||batch.batch.frames[i].validity==pipeline::GenerationValidity::Valid)++left;
                             flow->update([&](auto& m){if(left>s.remaining)m.pendingOutputFrames+=left-s.remaining;else m.pendingOutputFrames-=std::min(m.pendingOutputFrames,s.remaining-left);});s.remaining=left;
                         };std::unique_ptr<LiveStepState,decltype(updatePending)> pendingUpdate(&s,updatePending);
-                        if(!watch->ready){
+                        if(!isCapture&&!watch->ready){
                             if(elapsedMs(s.readyStart)>2000){veyra::log::error("capture-present","GPU ready timeout");return {State::Failed};}
                             return {State::Pending,now+2000};
                         }
-                        if(!s.readyReported){s.readyMs=std::max(0.0,std::chrono::duration<double,std::milli>(watch->readyObserved-s.readyStart).count());s.readyReported=true;flow->cpu(diagnostics::CpuStage::ReadyWait,s.readyMs,host100ns());}
+                        if(watch->ready&&!s.readyReported){s.readyMs=std::max(0.0,std::chrono::duration<double,std::milli>(watch->readyObserved-s.readyStart).count());s.readyReported=true;flow->cpu(diagnostics::CpuStage::ReadyWait,s.readyMs,host100ns());}
                         if(!isCapture&&fileAwaitingVideo&&!seekPreviewPending&&!fileInputEnded&&
                            (liveScheduler->occupancy()<2||!pendingCompletions.empty()))return {State::Pending,now+2000};
                         if(!isCapture&&audioStarted&&fileAudioAlignPending){
@@ -922,10 +928,22 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                         }
                         while(s.next<batch.batch.count){auto& item=batch.batch.frames[s.next];const bool generated=item.kind==pipeline::FrameKind::Generated;
                             if(stop_||(paused_&&!seekPreviewPending)||seekSeconds_>=0)return {State::Complete};
+                            if(isCapture&&!graph.resolveFrame(batch,s.next)){
+                                if(elapsedMs(s.readyStart)>2000){veyra::log::error("capture-present","GPU frame ready timeout");return {State::Failed};}
+                                return {State::Pending,host100ns()+2000};
+                            }
+                            if(isCapture&&!s.readyReported){s.readyMs=elapsedMs(s.readyStart);s.readyReported=true;flow->cpu(diagnostics::CpuStage::ReadyWait,s.readyMs,host100ns());}
                             if(generated&&item.validity!=pipeline::GenerationValidity::Valid){++s.handled;++s.next;continue;}
                             if(generated&&(comparisonMode_!=0||!generatedPresentationCurrent(jobGeneration,presentationGeneration.load()))){++presentationSkippedGenerated;++s.next;continue;}
                             const double itemPtsMs=double(item.pts100ns)/10000;
-                            if(generated&&(isCapture?timeline.expired(item.pts100ns,host100ns(),100000):!fileAwaitingVideo&&previewGeneratedExpired(nowMs(),itemPtsMs))){++s.dropped;++s.handled;++s.next;s.deadlineStart.reset();continue;}
+                            const auto decisionTime=host100ns();
+                            const bool generationExpired=generated&&(isCapture?timeline.expired(item.pts100ns,decisionTime,100000):!fileAwaitingVideo&&previewGeneratedExpired(nowMs(),itemPtsMs));
+                            if(generated&&isCapture&&decisionTime>=nextFgDeadlineLog){
+                                nextFgDeadlineLog=decisionTime+10000000;
+                                const auto ready=watch->frameReadyObserved[s.next];
+                                veyra::log::info("fg-deadline",std::format("revision={} batch={} subframe={} expired={} readyObservedLateMs={:.3f} decisionLateMs={:.3f} observedReadyToDecisionMs={:.3f} batchReady={} (CPU fence observations, not scanout)",item.identity.settingsRevision,batch.batch.batchId,item.subframe,generationExpired,double(ready-timeline.deadline(item.pts100ns))/10000,double(decisionTime-timeline.deadline(item.pts100ns))/10000,ready?double(decisionTime-ready)/10000:-1,watch->ready.load()));
+                            }
+                            if(generationExpired){++s.dropped;++s.handled;++s.next;s.deadlineStart.reset();continue;}
                             if(!s.deadlineStart)s.deadlineStart=Clock::now();
                             if(isCapture){if(host100ns()<timeline.deadline(item.pts100ns))return {State::Pending,timeline.deadline(item.pts100ns)};}
                             else if(!fileAwaitingVideo){

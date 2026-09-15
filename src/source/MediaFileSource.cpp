@@ -112,6 +112,13 @@ pipeline::ColorDescription MediaFileSource::parseColor(const AVCodecParameters* 
     // expansion and YUV matrix conversion. Match the working decode to the
     // sink encode; don't apply a reference-monitor gamma adjustment here.
     cd.preserveSdrCodeValues = true;
+    if(const auto* data=av_packet_side_data_get(params->coded_side_data,params->nb_coded_side_data,AV_PKT_DATA_MASTERING_DISPLAY_METADATA);data&&data->size>=sizeof(AVMasteringDisplayMetadata)){
+        const auto* m=reinterpret_cast<const AVMasteringDisplayMetadata*>(data->data);
+        if(m->has_luminance&&m->max_luminance.den>0)cd.hdrMasteringPeakNits=float(av_q2d(m->max_luminance));
+    }
+    if(const auto* data=av_packet_side_data_get(params->coded_side_data,params->nb_coded_side_data,AV_PKT_DATA_CONTENT_LIGHT_LEVEL);data&&data->size>=sizeof(AVContentLightMetadata)){
+        const auto* m=reinterpret_cast<const AVContentLightMetadata*>(data->data);cd.hdrMaxCllNits=float(m->MaxCLL);cd.hdrMaxFallNits=float(m->MaxFALL);
+    }
     AVFrame metadata{};metadata.format=params->format;metadata.height=info_.height;metadata.color_range=params->color_range;metadata.colorspace=params->color_space;metadata.color_trc=params->color_trc;
     return pipeline::resolveFrameColor(metadata,cd);
 }
@@ -338,7 +345,7 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
             if(const auto* data=side(AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,AV_PKT_DATA_CONTENT_LIGHT_LEVEL,sizeof(AVContentLightMetadata),contentOrigin)){
                 const auto& value=*reinterpret_cast<const AVContentLightMetadata*>(data);maxCll=value.MaxCLL;maxFall=value.MaxFALL;
             }
-            log::info("hdr-metadata",std::format("masteringSource={} masteringMinNits={} masteringMaxNits={} contentSource={} maxCLL={} maxFALL={} (-1=unavailable; 0 content level=unspecified); diagnostic only, not applied to fixed SDR tone map",masteringOrigin,minNits,maxNits,contentOrigin,maxCll,maxFall));
+            log::info("hdr-metadata",std::format("masteringSource={} masteringMinNits={} masteringMaxNits={} contentSource={} maxCLL={} maxFALL={} (-1=unavailable; 0 content level=unspecified); SDR mapping validates peak declarations separately",masteringOrigin,minNits,maxNits,contentOrigin,maxCll,maxFall));
         }
     }
     out.sourceEpoch = epoch_;
