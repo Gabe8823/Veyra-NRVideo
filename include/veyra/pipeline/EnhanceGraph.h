@@ -1,4 +1,5 @@
 #pragma once
+#include "veyra/engine/BackendRecovery.h"
 
 // EnhanceGraph - the real unified processing graph (Playbook R3.2).
 // Chains, per real frame:
@@ -228,8 +229,10 @@ public:
     void setNrEnabled(bool on);
     void setFgEnabled(bool on) { fgEnabled_ = on && !desc_.stillImage; }
     bool fgCreated() const;
+    engine::FailedBackend failedBackend() const { return failedBackend_; }
 
 private:
+    engine::FailedBackend failedBackend_=engine::FailedBackend::None;
     bool createResources();
     bool initZeroAndDepthTextures();
     bool initNvof();

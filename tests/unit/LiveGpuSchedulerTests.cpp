@@ -50,5 +50,7 @@ int main(){
     check(*budget.predicted(24000000)<14,"old slow completion expires even when no FG succeeds");
     check(!budget.admit(24000000,23800000,0,0),"recovery never admits an already expired deadline");
     budget.reset();check(!budget.predicted(25000000),"settings revision reset clears prior backend costs");
+    budget.fgCost(20,25000000);budget.complete(12,true,false,25000000,3);
+    check(budget.predicted(25000000)==29,"subtract same-frame FG time instead of another frame's higher percentile");
     return failures?1:0;
 }

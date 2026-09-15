@@ -1,6 +1,9 @@
 #include "CapturePanel.h"
 #include "Theme.h"
 #include "SettingHelp.h"
+#include "CapturePreferenceStore.h"
+#include "veyra/RuntimePaths.h"
+#include "veyra/Log.h"
 #include "veyra/source/CaptureCardSource.h"
 #include <future>
 #include <format>
@@ -8,16 +11,26 @@ namespace veyra::ui {
 namespace {
 HWND window=nullptr;HFONT font=nullptr;std::function<void(const std::wstring&)> start;
 struct Query {int device=-1;std::vector<source::CaptureDevice> video,audio;std::vector<source::CaptureFormat> formats;};
-std::future<Query> pending;bool busy=false;int queriedDevice=-1;ULONGLONG queryStarted=0;
+std::future<Query> pending;bool busy=false,refreshAfterQuery=false;int queriedDevice=-1;ULONGLONG queryStarted=0;
 std::vector<source::CaptureFormat> formats;
 std::vector<source::CaptureDevice> videoDevices,audioDevices;
+CapturePreferences remembered;
 std::function<bool()> readSdr;std::function<bool(bool)> setSdr;
 void rebuildAudioList(HWND h,int device){
     SendDlgItemMessageW(h,3,CB_RESETCONTENT,0,0);SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(L"不监听音频"));
     const bool videoSelected=device>=0&&size_t(device)<videoDevices.size();
     if(videoSelected)SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(videoDevices[size_t(device)].hasEmbeddedAudio?L"使用视频设备内置音频（已检测）":L"尝试视频设备内置音频"));
     for(auto& audio:audioDevices){const auto label=std::format(L"[{}] {}",audio.wasapi?L"WASAPI":L"DirectShow",audio.name);SendDlgItemMessageW(h,3,CB_ADDSTRING,0,LPARAM(label.c_str()));}
-    SendDlgItemMessageW(h,3,CB_SETCURSEL,0,0);
+    int restore=0;
+    if(videoSelected&&videoDevices[size_t(device)].path==remembered.videoPath){
+        if(remembered.audioMode==source::kCaptureAudioFromVideoDevice)restore=1;
+        else if(!remembered.audioPath.empty()){
+            restore=-1;
+            for(size_t i=0;i<audioDevices.size();++i)
+                if(audioDevices[i].path==remembered.audioPath&&audioDevices[i].wasapi==(remembered.audioMode==source::kCaptureAudioWasapi))restore=int(i)+2;
+        }
+    }
+    SendDlgItemMessageW(h,3,CB_SETCURSEL,restore,0);
 }
 int selectedAudio(HWND h,int device){
     const int selection=int(SendDlgItemMessageW(h,3,CB_GETCURSEL,0,0));if(selection<=0)return source::kCaptureAudioDisabled;
@@ -32,6 +45,8 @@ void query(int device){if(busy)return;busy=true;queriedDevice=device;queryStarte
 void arrange(){RECT r{};GetClientRect(window,&r);const int width=MulDiv(r.right,96,veyra::ui::layoutDpi(window));const int ys[]={0,44,114,184,412,412,14,84,344,154,254,224,294};for(int id=1;id<=12;++id){int x=id==5?width-152:16;int w=id==4?width-184:id==5?136:width-32;MoveWindow(GetDlgItem(window,id),dip(window,x),dip(window,ys[id]),dip(window,w),dip(window,(id<=3||id==10)?180:id==8?56:id==4||id==5?36:24),TRUE);}}
 LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM wp,LPARAM lp){switch(msg){
 case WM_CREATE:{window=h;font=makeFont(h);titleTheme(h);auto add=[&](const wchar_t* cls,const wchar_t* label,int id,DWORD style){auto c=CreateWindowExW(0,cls,label,WS_CHILD|WS_VISIBLE|style,0,0,1,1,h,HMENU(INT_PTR(id)),GetModuleHandleW(nullptr),nullptr);SendMessageW(c,WM_SETFONT,WPARAM(font),TRUE);themeControl(c);};
+    remembered=CapturePreferenceStore(runtime::localDataDirectory()).load();
+    refreshAfterQuery=busy;
     for(int i=1;i<=3;++i)add(L"COMBOBOX",L"",i,CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP);
     add(L"COMBOBOX",L"",10,CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP);add(L"STATIC",L"输入颜色（变更需重连）",11,0);
     for(auto name:{L"自动识别 SDR / HDR · 设备元数据",L"手动 HDR10 / PQ · BT.2020",L"手动 HLG · BT.2020 / 1000nit参考"})SendDlgItemMessageW(h,10,CB_ADDSTRING,0,LPARAM(name));SendDlgItemMessageW(h,10,CB_SETCURSEL,0,0);
@@ -44,20 +59,32 @@ case WM_TIMER:
     SendDlgItemMessageW(h,12,BM_SETCHECK,readSdr()?BST_CHECKED:BST_UNCHECKED,0);
     if(busy&&pending.wait_for(std::chrono::seconds(0))==std::future_status::ready){
         auto result=pending.get();busy=false;EnableWindow(GetDlgItem(h,5),TRUE);EnableWindow(GetDlgItem(h,1),TRUE);
+        if(refreshAfterQuery){refreshAfterQuery=false;query(-1);return 0;}
         if(result.device<0){
             videoDevices=std::move(result.video);audioDevices=std::move(result.audio);
             SendDlgItemMessageW(h,1,CB_RESETCONTENT,0,0);SendDlgItemMessageW(h,2,CB_RESETCONTENT,0,0);formats.clear();
             for(auto& video:videoDevices)SendDlgItemMessageW(h,1,CB_ADDSTRING,0,LPARAM(video.name.c_str()));
             if(!videoDevices.empty()){
-                SendDlgItemMessageW(h,1,CB_SETCURSEL,0,0);rebuildAudioList(h,0);query(0);
+                int restore=remembered.videoPath.empty()?0:-1;
+                for(size_t i=0;i<videoDevices.size();++i)if(videoDevices[i].path==remembered.videoPath)restore=int(i);
+                SendDlgItemMessageW(h,1,CB_SETCURSEL,restore,0);rebuildAudioList(h,restore);
+                if(restore>=0)query(restore);else SetDlgItemTextW(h,8,L"上次采集设备未连接。插回后刷新，或手动选择其他设备。");
             }else{
                 rebuildAudioList(h,-1);SetDlgItemTextW(h,8,L"未找到采集设备。连接后点击刷新。");
             }
         }else{
             formats=std::move(result.formats);SendDlgItemMessageW(h,2,CB_RESETCONTENT,0,0);
             for(auto& format:formats)SendDlgItemMessageW(h,2,CB_ADDSTRING,0,LPARAM(format.label.c_str()));
-            if(!formats.empty())SendDlgItemMessageW(h,2,CB_SETCURSEL,0,0);EnableWindow(GetDlgItem(h,4),!formats.empty());
+            int restore=formats.empty()?-1:0;
+            const bool sameDevice=size_t(result.device)<videoDevices.size()&&videoDevices[size_t(result.device)].path==remembered.videoPath;
+            if(sameDevice&&!remembered.formatKey.empty()){
+                restore=-1;for(size_t i=0;i<formats.size();++i)if(formats[i].key==remembered.formatKey)restore=int(i);
+                SendDlgItemMessageW(h,10,CB_SETCURSEL,remembered.colorOverride,0);
+            }else SendDlgItemMessageW(h,10,CB_SETCURSEL,0,0);
+            SendDlgItemMessageW(h,2,CB_SETCURSEL,restore,0);EnableWindow(GetDlgItem(h,4),restore>=0);
             SetDlgItemTextW(h,8,formats.empty()?L"未读到有效的4K以内采集格式，或设备正被其他应用占用。":L"连接后使用当前增强设置。格式与音频变更需要重新连接。");
+            if(!formats.empty()&&restore<0)SetDlgItemTextW(h,8,L"上次格式已不可用，请重新选择格式。");
+            if(SendDlgItemMessageW(h,3,CB_GETCURSEL,0,0)==CB_ERR){EnableWindow(GetDlgItem(h,4),FALSE);SetDlgItemTextW(h,8,L"上次音频设备未连接。请选择音频设备，或明确选择不监听音频。");}
         }
     }else if(busy&&GetTickCount64()-queryStarted>5000)SetDlgItemTextW(h,8,L"设备查询耗时较长。可以关闭此面板，当前播放不受影响。");
     return 0;
@@ -68,17 +95,23 @@ case WM_COMMAND:
         SendDlgItemMessageW(h,12,BM_SETCHECK,readSdr()?BST_CHECKED:BST_UNCHECKED,0);
     }else if(LOWORD(wp)==1&&HIWORD(wp)==CBN_SELCHANGE){
         const int device=int(SendDlgItemMessageW(h,1,CB_GETCURSEL,0,0));rebuildAudioList(h,device);query(device);
+    }else if((LOWORD(wp)==2||LOWORD(wp)==3)&&HIWORD(wp)==CBN_SELCHANGE){
+        EnableWindow(GetDlgItem(h,4),!busy&&SendDlgItemMessageW(h,2,CB_GETCURSEL,0,0)!=CB_ERR&&SendDlgItemMessageW(h,3,CB_GETCURSEL,0,0)!=CB_ERR);
     }else if(LOWORD(wp)==5){
         query(-1);
     }else if(LOWORD(wp)==4){
         const int device=int(SendDlgItemMessageW(h,1,CB_GETCURSEL,0,0));
         const int format=int(SendDlgItemMessageW(h,2,CB_GETCURSEL,0,0));
         const int audio=selectedAudio(h,device);
-        const bool audioIndexValid=audio<0||size_t(audio)<audioDevices.size();
+        const bool audioIndexValid=SendDlgItemMessageW(h,3,CB_GETCURSEL,0,0)!=CB_ERR&&(audio<0||size_t(audio)<audioDevices.size());
         if(!busy&&device==queriedDevice&&format>=0&&size_t(format)<formats.size()&&device>=0&&size_t(device)<videoDevices.size()&&audioIndexValid){
             const auto* audioDevice=audio>=0?&audioDevices[size_t(audio)]:nullptr;
             const auto path=source::CaptureCardSource::makeCapturePath(unsigned(device),videoDevices[size_t(device)],formats[size_t(format)].index,audio,audioDevice,unsigned(SendDlgItemMessageW(h,10,CB_GETCURSEL,0,0)));
-            if(!path.empty()){start(path);DestroyWindow(h);}
+            if(!path.empty()){
+                remembered={videoDevices[size_t(device)].path,formats[size_t(format)].key,audioDevice?audioDevice->path:L"",audioDevice?(audioDevice->wasapi?source::kCaptureAudioWasapi:0):audio,unsigned(SendDlgItemMessageW(h,10,CB_GETCURSEL,0,0))};
+                if(!CapturePreferenceStore(runtime::localDataDirectory()).save(remembered))log::warn("capture","Failed to save capture selection");
+                start(path);DestroyWindow(h);
+            }
         }
     }
     return 0;

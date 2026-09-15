@@ -76,6 +76,7 @@ public:
     HWND hwnd() const { return hwnd_; }
     IDXGISwapChain3* swapChain() const { return swapChain_.Get(); }
     XessPresenter* xess() const { return xess_.get(); }
+    bool xessFailed() const { return xessFailed_; }
 
     void shutdown();
 
@@ -99,7 +100,9 @@ private:
     uint32_t bufferExtentW_ = 0;
     uint32_t bufferExtentH_ = 0;
     bool tearingSupported_ = false;
+    UINT swapChainFlags_ = 0;
     bool pendingResize_ = false;
+    bool xessFailed_ = false;
     ID3D12Device* device_ = nullptr;
     ID3D12CommandQueue* queue_ = nullptr;
     ComPtr<IDXGIFactory2> factory_;

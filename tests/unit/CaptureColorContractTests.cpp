@@ -47,6 +47,9 @@ int main(){
     DXVA2_ExtendedFormat ext{};ext.NominalRange=DXVA2_NominalRange_0_255;ext.VideoTransferMatrix=DXVA2_VideoTransferMatrix_BT709;vi.dwControlFlags=ext.value|AMCONTROL_COLORINFO_PRESENT;
     check(source::captureMediaLayout(type,layout)&&layout.color.range==pipeline::ColorRange::Full&&!layout.color.rangeAssumed&&layout.color.matrix==pipeline::YuvMatrix::BT709&&!layout.color.matrixAssumed,"honor explicit matrix and range");
     auto resolved=pipeline::resolveFrameColor(*frame,layout.color);check(resolved.transfer==pipeline::TransferFunction::SRGB&&resolved.transferAssumed&&resolved.range==pipeline::ColorRange::Full,"source contract survives graph resolution");
+    ext.VideoTransferFunction=DXVA2_VideoTransFunc_709;vi.dwControlFlags=ext.value|AMCONTROL_COLORINFO_PRESENT;
+    check(source::captureMediaLayout(type,layout)&&layout.color.preserveSdrCodeValues&&!layout.color.transferAssumed&&pipeline::workingTransferCode(layout.color)==1,"explicit BT709 metadata retained; working decode reverses the SDR sink encode");
+    ext.VideoTransferFunction=DXVA2_VideoTransFunc_Unknown;
     ext.NominalRange=DXVA2_NominalRange_48_208;vi.dwControlFlags=ext.value|AMCONTROL_COLORINFO_PRESENT;check(!source::captureMediaLayout(type,layout),"unsupported range fails closed");vi.dwControlFlags=0;
     vi.bmiHeader.biWidth=3;check(!source::captureMediaLayout(type,layout),"odd YUY2 width rejected");vi.bmiHeader.biWidth=4;
     vi.bmiHeader.biSizeImage=23;check(!source::captureMediaLayout(type,layout),"ambiguous byte pitch rejected");vi.bmiHeader.biSizeImage=24;

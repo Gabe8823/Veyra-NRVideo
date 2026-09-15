@@ -122,7 +122,12 @@ LRESULT CALLBACK interaction(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR id,DWORD_P
     if(id==VideoSurface&&(m==WM_MBUTTONUP||m==WM_CAPTURECHANGED)){panning=false;if(m==WM_MBUTTONUP&&GetCapture()==h)ReleaseCapture();}
     if(id==VideoSurface&&m==WM_SETCURSOR&&full&&!fullControls){SetCursor(nullptr);return TRUE;}
     if(id==VideoSurface&&m==WM_ERASEBKGND)return 1;
-    if(id==VideoSurface&&m==WM_PAINT){veyra::ui::PaintBuffer paint(h);veyra::ui::opaqueBlack(paint.dc,paint.rect);return 0;}
+    if(id==VideoSurface&&m==WM_PAINT){
+        const auto state=engine.snapshot();
+        if(state.running&&state.frames){PAINTSTRUCT paint{};BeginPaint(h,&paint);EndPaint(h,&paint);}
+        else{veyra::ui::PaintBuffer paint(h);veyra::ui::opaqueBlack(paint.dc,paint.rect);}
+        return 0;
+    }
     if(id==OriginalHold){if(m==WM_LBUTTONDOWN){holdOriginal=true;SetCapture(h);updateComparison();return 0;}if(m==WM_LBUTTONUP||m==WM_CAPTURECHANGED){holdOriginal=false;if(GetCapture()==h)ReleaseCapture();updateComparison();return 0;}}
     if(id==VideoSurface&&compareMode==2&&(m==WM_LBUTTONDOWN||m==WM_MOUSEMOVE)&&(m==WM_LBUTTONDOWN||(w&MK_LBUTTON))){if(m==WM_LBUTTONDOWN)SetCapture(h);RECT r{};GetClientRect(h,&r);auto extent=engine.snapshot().metrics.resolution.output;auto view=engine.previewView();float contentWidth=float(r.right);if(extent.width&&extent.height)contentWidth=std::min(float(r.right),float(r.bottom)*extent.width/extent.height);contentWidth*=view.zoom;float left=r.right*.5f-contentWidth*view.centerX;compareSplit=std::clamp((float(GET_X_LPARAM(l))-left)/std::max(1.0f,contentWidth),0.0f,1.0f);updateComparison();return 0;}
     if(id==VideoSurface&&m==WM_LBUTTONUP&&GetCapture()==h){ReleaseCapture();return 0;}
@@ -526,6 +531,16 @@ wc.hIconSm=static_cast<HICON>(LoadImageW(instance,MAKEINTRESOURCEW(IDI_VEYRA),IM
 RegisterClassExW(&wc);
 auto hwnd=CreateWindowExW(0,wc.lpszClassName,L"Veyra — 本地实验版",ShellStyle,CW_USEDEFAULT,CW_USEDEFAULT,std::min(MulDiv(uiPreferences.width,GetDpiForSystem(),96),GetSystemMetrics(SM_CXSCREEN)),std::min(MulDiv(uiPreferences.height,GetDpiForSystem(),96),GetSystemMetrics(SM_CYSCREEN)-40),nullptr,nullptr,instance,nullptr);if(!hwnd)return 1;if(uiPreferences.positioned&&smokeSeconds<=0){RECT target{uiPreferences.x,uiPreferences.y,uiPreferences.x+MulDiv(uiPreferences.width,GetDpiForSystem(),96),uiPreferences.y+MulDiv(uiPreferences.height,GetDpiForSystem(),96)};MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(MonitorFromRect(&target,MONITOR_DEFAULTTONEAREST),&mi);int width=std::min(target.right-target.left,mi.rcWork.right-mi.rcWork.left),height=std::min(target.bottom-target.top,mi.rcWork.bottom-mi.rcWork.top);SetWindowPos(hwnd,nullptr,std::clamp(target.left,mi.rcWork.left,mi.rcWork.right-width),std::clamp(target.top,mi.rcWork.top,mi.rcWork.bottom-height),width,height,SWP_NOZORDER|SWP_NOACTIVATE);}CheckDlgButton(hwnd,Nr,initialOptions.nr?BST_CHECKED:BST_UNCHECKED);CheckDlgButton(hwnd,Sr,initialOptions.sr?BST_CHECKED:BST_UNCHECKED);CheckDlgButton(hwnd,Fg,initialOptions.fg?BST_CHECKED:BST_UNCHECKED);CheckDlgButton(hwnd,Realtime,initialOptions.realtime?BST_CHECKED:BST_UNCHECKED);ShowWindow(hwnd,show);MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){if(full&&GetAncestor(msg.hwnd,GA_ROOT)==hwnd&&(msg.message==WM_MOUSEMOVE||msg.message==WM_LBUTTONDOWN||msg.message==WM_KEYDOWN)){static POINT previous{-9999,-9999};POINT now{};GetCursorPos(&now);if(msg.message!=WM_MOUSEMOVE||now.x!=previous.x||now.y!=previous.y)pointerActivity();previous=now;}if(GetAncestor(msg.hwnd,GA_ROOT)==hwnd&&(msg.message==WM_KEYDOWN||msg.message==WM_KEYUP||msg.message==WM_SYSKEYDOWN)){
 wchar_t focusedClass[32]{};GetClassNameW(GetFocus(),focusedClass,32);const bool editing=_wcsicmp(focusedClass,L"Edit")==0||_wcsicmp(focusedClass,L"ComboBox")==0;
+const bool adjustingSlider=_wcsicmp(focusedClass,TRACKBAR_CLASSW)==0&&GetFocus()!=seekBar;
+if(!editing&&!adjustingSlider&&msg.message==WM_KEYDOWN&&(msg.wParam==VK_LEFT||msg.wParam==VK_RIGHT)&&
+   !(GetKeyState(VK_CONTROL)&0x8000)&&!(GetKeyState(VK_MENU)&0x8000)){
+    const auto state=engine.snapshot();
+    if(state.running&&!state.capture&&!state.image&&state.duration>0){
+        const double origin=state.seekPresented<state.seekRequested?state.seekTarget:state.position;
+        engine.seek(std::clamp(origin+(msg.wParam==VK_RIGHT?10.0:-10.0),0.0,state.duration));
+        if(full)pointerActivity();continue;
+    }
+}
 if(!editing&&msg.message==WM_KEYDOWN&&(GetKeyState(VK_CONTROL)&0x8000)&&msg.wParam=='O'){SendMessageW(hwnd,WM_COMMAND,Open,0);continue;}
 if(!editing&&msg.message==WM_KEYDOWN&&(GetKeyState(VK_CONTROL)&0x8000)&&msg.wParam=='E'){if(uiState.mode==veyra::ui::Mode::Daily)switchMode();selectInspector(3);continue;}
 const bool key=(!editing)&&(msg.wParam==VK_F11||msg.wParam==VK_ESCAPE||(msg.wParam==VK_SPACE&&(GetFocus()==hwnd||GetFocus()==video))||msg.wParam=='V'||(msg.wParam==VK_RETURN&&msg.message==WM_SYSKEYDOWN));if(key){SendMessageW(hwnd,msg.message,msg.wParam,msg.lParam);continue;}}

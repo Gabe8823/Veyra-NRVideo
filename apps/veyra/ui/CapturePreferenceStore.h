@@ -1,0 +1,44 @@
+#pragma once
+#include <windows.h>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <string>
+
+namespace veyra::ui {
+struct CapturePreferences {
+    std::wstring videoPath,formatKey,audioPath;
+    int audioMode=-1;
+    unsigned colorOverride=0;
+};
+class CapturePreferenceStore {
+    std::filesystem::path path_;
+public:
+    explicit CapturePreferenceStore(std::filesystem::path folder):path_(std::move(folder)/"capture-preferences.v1"){}
+    CapturePreferences load()const {
+        std::ifstream file(path_,std::ios::binary|std::ios::ate);
+        if(!file)return {};
+        const std::streamoff size=file.tellg();
+        if(size<=0||size>65536||size%sizeof(wchar_t))return {};
+        std::wstring data(size_t(size)/sizeof(wchar_t),0);file.seekg(0);
+        if(!file.read(reinterpret_cast<char*>(data.data()),size))return {};
+        std::wistringstream in(data);std::wstring magic;int version=0;CapturePreferences result;
+        if(!(in>>magic>>version>>std::quoted(result.videoPath)>>std::quoted(result.formatKey)>>result.audioMode>>std::quoted(result.audioPath)>>result.colorOverride)||
+           magic!=L"VEYRA_CAPTURE"||version!=1||result.audioMode< -3||result.audioMode>0||result.colorOverride>2)return {};
+        in>>std::ws;return in.eof()?result:CapturePreferences{};
+    }
+    bool save(const CapturePreferences& p)const {
+        if(p.audioMode< -3||p.audioMode>0||p.colorOverride>2)return false;
+        std::error_code ec;std::filesystem::create_directories(path_.parent_path(),ec);if(ec)return false;
+        std::wostringstream out;out<<L"VEYRA_CAPTURE 1\n"<<std::quoted(p.videoPath)<<L' '<<std::quoted(p.formatKey)<<L' '<<p.audioMode<<L' '<<std::quoted(p.audioPath)<<L' '<<p.colorOverride<<L'\n';
+        const auto data=out.str();if(data.size()>65536/sizeof(wchar_t))return false;const DWORD bytes=DWORD(data.size()*sizeof(wchar_t));
+        auto tmp=path_;tmp+=L".tmp-"+std::to_wstring(GetCurrentProcessId());
+        HANDLE file=CreateFileW(tmp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(file==INVALID_HANDLE_VALUE)return false;
+        DWORD written=0;bool ok=WriteFile(file,data.data(),bytes,&written,nullptr)&&written==bytes&&FlushFileBuffers(file);CloseHandle(file);
+        ok=ok&&MoveFileExW(tmp.c_str(),path_.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+        if(!ok)DeleteFileW(tmp.c_str());
+        return ok;
+    }
+};
+}

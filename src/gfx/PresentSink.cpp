@@ -163,12 +163,17 @@ bool PresentSink::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
 
     DXGI_SWAP_CHAIN_DESC1 actual{};
     const HRESULT descResult=swapChain_->GetDesc1(&actual);
-    if(FAILED(descResult)||actual.SwapEffect!=scd.SwapEffect){
-        log::error("present",std::format("swapchain mode rejected hr=0x{:X} requested={} actual={}",unsigned(descResult),unsigned(scd.SwapEffect),unsigned(actual.SwapEffect)));
+    const bool flip=actual.SwapEffect==DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL||actual.SwapEffect==DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    if(FAILED(descResult)||!flip||actual.Format!=scd.Format||actual.BufferCount!=3||
+       actual.Width!=scd.Width||actual.Height!=scd.Height||actual.SampleDesc.Count!=1||actual.SampleDesc.Quality!=0){
+        log::error("present",std::format("swapchain contract rejected hr=0x{:X} requestedMode={} actualMode={} format={} buffers={} extent={}x{} samples={}/{}",unsigned(descResult),unsigned(scd.SwapEffect),unsigned(actual.SwapEffect),unsigned(actual.Format),actual.BufferCount,actual.Width,actual.Height,actual.SampleDesc.Count,actual.SampleDesc.Quality));
         status=Status::WindowFailure;return false;
     }
+    if(actual.SwapEffect!=scd.SwapEffect)log::warn("present",std::format("swapchain mode negotiated requested={} actual={} (compatible flip model)",unsigned(scd.SwapEffect),unsigned(actual.SwapEffect)));
+    swapChainFlags_=actual.Flags;
+    tearingSupported_=tearingSupported_&&(actual.Flags&DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)!=0;
     log::info("present", std::format("present-sink: window {}x{} swapEffect={} buffers=3 vsync={} tearing={} captureCompatible={} (capture not verified)",
-        width_, height_, desc.captureCompatible?"flip-sequential":"flip-discard", desc_.vsync ? 1 : 0, tearingSupported_ ? 1 : 0, desc.captureCompatible));
+        width_, height_, actual.SwapEffect==DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL?"flip-sequential":"flip-discard", desc_.vsync ? 1 : 0, tearingSupported_ ? 1 : 0, desc.captureCompatible));
     return true;
 }
 
@@ -215,15 +220,16 @@ ID3D12Resource* PresentSink::currentBackBuffer()
 
 bool PresentSink::present(Status& status)
 {
+    xessFailed_=false;
     const UINT syncInterval = desc_.vsync ? 1 : 0;
     const UINT flags = (!desc_.vsync && tearingSupported_) ? DXGI_PRESENT_ALLOW_TEARING : 0;
     ++attemptedPresentCount_;
-    if(xess_&&!xess_->beforePresent()){status=Status::WindowFailure;return false;}
+    if(xess_&&!xess_->beforePresent()){xessFailed_=true;status=Status::WindowFailure;return false;}
     const HRESULT hr = swapChain_->Present(syncInterval, flags);
     if (SUCCEEDED(hr)) {
         ++presentCount_;
         backBufferIndex_ = swapChain_->GetCurrentBackBufferIndex();
-        if(xess_&&!xess_->afterPresent()){status=Status::WindowFailure;return false;}
+        if(xess_&&!xess_->afterPresent()){xessFailed_=true;status=Status::WindowFailure;return false;}
         return true;
     }
     ++failedPresentCount_;
@@ -293,7 +299,7 @@ void PresentSink::resize(uint32_t width, uint32_t height)
 {
     if (width == 0 || height == 0) return;
     if (width == width_ && height == height_) return;
-    const UINT flags = tearingSupported_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    const UINT flags = swapChainFlags_;
     // DXGI spec compliance before ResizeBuffers: wait for outstanding GPU
     // work on the presenting queue, then release ALL back-buffer references.
     if (!waitForQueueIdle()) return;

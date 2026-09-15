@@ -195,7 +195,9 @@ std::vector<CaptureFormat> enumerateFormats(IAMStreamConfig* config){
         if(bitmap&&bitmap->biWidth>0&&bitmap->biWidth<=3840&&std::abs(int64_t(bitmap->biHeight))>0&&std::abs(int64_t(bitmap->biHeight))<=2160&&duration>0){unsigned width=bitmap->biWidth,height=unsigned(std::abs(int64_t(bitmap->biHeight)));double fps=1e7/duration;
             const auto pixel=capturePixelName(type->subtype);CaptureMediaLayout layout;const bool valid=captureMediaLayout(*type,layout);const bool knownRaw=capturePacking(type->subtype)!=CapturePacking::Unknown;
             const wchar_t* support=valid?((layout.format==AV_PIX_FMT_P010||layout.format==AV_PIX_FMT_P016)?L"原生 · SDR":L"原生"):knownRaw?L"布局/颜色暂不支持":L"需系统解码/转换";
-            out.push_back({i,width,height,fps,std::format(L"{} x {} @ {:.2f} fps · {} · {} [format {}]",width,height,fps,pixel,support,i)});
+            wchar_t subtype[40]{},formatType[40]{};StringFromGUID2(type->subtype,subtype,40);StringFromGUID2(type->formattype,formatType,40);
+            const auto key=std::format(L"{}:{}:{}:{}:{}:{}:{}",width,bitmap->biHeight,duration,subtype,formatType,bitmap->biBitCount,bitmap->biCompression);
+            out.push_back({i,width,height,fps,std::format(L"{} x {} @ {:.2f} fps · {} · {} [format {}]",width,height,fps,pixel,support,i),key});
         }
         freeType(type);
     }
@@ -356,6 +358,8 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
         if(av_frame_get_buffer(*f,32)<0)return false;
     }
     p.configured=true;
+    reconnectDesc_=desc;reconnectInfo_=p.info;reconnectFormat_.clear();
+    for(const auto& candidate:enumerateFormats(p.config.Get()))if(candidate.index==format){reconnectFormat_=candidate.key;break;}
     // Log the upstream type after DirectShow has finished negotiation. The
     // RGB32 output's nominal FPS alone is not proof of actual callback cadence.
     AM_MEDIA_TYPE* actual=nullptr;const auto formatHr=p.config->GetFormat(&actual);
@@ -370,16 +374,42 @@ bool CaptureCardSource::start(){
     if(p.info.opened&&p.wasapi&&!p.wasapi->start())p.audioError=L"WASAPI 音频启动失败；视频继续运行";
     veyra::log::info("capture",std::format("Run hr=0x{:X} actual={}x{} nominalFps={:.3f} mailbox=1 ownedBuffers=2",unsigned(hr),p.info.width,p.info.height,p.info.averageFps));return p.info.opened;
 }
+bool CaptureCardSource::reconnect(float gain,unsigned syncMode,int offsetMs){
+    CaptureSelection selection;
+    if(!parseCapturePath(reconnectDesc_.path,selection)||!selection.stable||reconnectFormat_.empty()){
+        log::warn("capture-reconnect","Stable device and format identity unavailable; manual selection required");return false;
+    }
+    const auto desc=reconnectDesc_;const auto key=reconnectFormat_;const auto expected=reconnectInfo_;
+    // Stop callbacks before carrying counters into the next device session.
+    // Never hold the mailbox lock while DirectShow Stop waits for a callback.
+    if(p_->control)p_->control->Stop();
+    {std::lock_guard lock(p_->mutex);
+        receivedOffset_+=p_->received;deliveredOffset_+=p_->sequence;droppedOffset_+=p_->dropped;}
+    close();
+    int format=-1;for(const auto& candidate:formatsByPath(selection.videoPath))if(candidate.key==key){format=candidate.index;break;}
+    if(format<0)return false;
+    auto reopen=desc;reopen.path=std::format(L"capture2:{}:{}:{}:{}:{}",encodePath(selection.videoPath),format,selection.audio,encodePath(selection.audioPath),selection.colorOverride);
+    bool ok=configure(reopen);
+    if(ok){const auto& current=p_->info;
+        ok=current.width==expected.width&&current.height==expected.height&&current.color.pixelFormat==expected.color.pixelFormat&&
+           current.color.transfer==expected.color.transfer&&current.color.matrix==expected.color.matrix&&current.color.primaries==expected.color.primaries&&
+           current.color.range==expected.color.range&&current.color.displayReferred709==expected.color.displayReferred709&&current.color.preserveSdrCodeValues==expected.color.preserveSdrCodeValues;
+        if(!ok)log::warn("capture-reconnect","Negotiated input contract changed; explicit reselection required");
+    }
+    if(ok){setAudioGain(gain);setAudioSync(syncMode,offsetMs);ok=start();}
+    if(ok){++epoch_;log::info("capture-reconnect",std::format("reconnected epoch={} formatIndex={} history reset required",epoch_,format));return true;}
+    close();reconnectDesc_=desc;reconnectFormat_=key;reconnectInfo_=expected;return false;
+}
 CaptureMetrics CaptureCardSource::metrics()const{
     auto& p=*p_;std::lock_guard lock(p.mutex);CaptureMetrics m;
-    m.received=p.received;m.delivered=p.sequence;m.dropped=p.dropped;m.readAgeMs=p.readAgeMs;
+    m.received=receivedOffset_+p.received;m.delivered=deliveredOffset_+p.sequence;m.dropped=droppedOffset_+p.dropped;m.readAgeMs=p.readAgeMs;
     if(p.received>1){const double elapsed=std::chrono::duration<double>(p.latestArrival-p.firstArrival).count();if(elapsed>0)m.callbackFps=(p.received-1)/elapsed;}
     if(p.sequence)m.frameAgeMs=std::chrono::duration<double,std::milli>(Impl::Clock::now()-p.readArrival).count();return m;
 }
 SourceReadStatus CaptureCardSource::read(pipeline::FramePacket& packet,const AVFrame** frame){return readWithWait(packet,frame,30);}
 SourceReadStatus CaptureCardSource::tryRead(pipeline::FramePacket& packet,const AVFrame** frame){return readWithWait(packet,frame,0);}
 SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,const AVFrame** frame,unsigned milliseconds){auto& p=*p_;*frame=nullptr;if(!p.info.opened)return SourceReadStatus::Error;
-    long code=0;LONG_PTR a=0,b=0;while(p.events&&p.events->GetEvent(&code,&a,&b,0)==S_OK){p.events->FreeEventParams(code,a,b);if(code==EC_DEVICE_LOST||code==EC_ERRORABORT)return SourceReadStatus::Error;}
+    long code=0;LONG_PTR a=0,b=0;while(p.events&&p.events->GetEvent(&code,&a,&b,0)==S_OK){if(code==EC_DEVICE_LOST||code==EC_ERRORABORT)log::warn("capture-reconnect",std::format("DirectShow event={} detail=0x{:X}",code,uint64_t(a)));p.events->FreeEventParams(code,a,b);if(code==EC_DEVICE_LOST||code==EC_ERRORABORT)return SourceReadStatus::Error;}
     double time=0;uint32_t flags=0;uint64_t sequence=0;pipeline::Rational duration;
     {
         std::unique_lock lock(p.mutex);if(milliseconds)p.wake.wait_for(lock,std::chrono::milliseconds(milliseconds),[&]{return p.pending||p.callbackError;});
@@ -394,6 +424,7 @@ SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,c
         p.lastDrop=p.dropped;p.lastPts=time;++p.sequence;sequence=p.received;
     }
     p.frame->pts=static_cast<int64_t>(time*10000000);p.frame->duration=duration.isUnknown()?0:duration.to100ns();p.frame->time_base={1,10000000};packet={};packet.pts={p.frame->pts,10000000};packet.duration=duration;packet.colorInfo=p.info.color;packet.sourceKind=pipeline::SourceKind::CaptureCard;packet.sequence=sequence;packet.flags=flags;packet.sourceEpoch=1;
+    packet.sequence+=receivedOffset_;packet.sourceEpoch=epoch_;
     packet.arrivalHost100ns=std::chrono::duration_cast<std::chrono::nanoseconds>(p.readArrival.time_since_epoch()).count()/100;
     *frame=p.frame;p.lastFrame=Impl::Clock::now();return SourceReadStatus::Frame;
 }

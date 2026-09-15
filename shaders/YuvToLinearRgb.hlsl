@@ -2,12 +2,12 @@
 // Reads plane 0 as R8/R16 UNORM and plane 1 as R8G8/R16G16 UNORM via two
 // SRVs; the dispatch covers the full frame. Color metadata (range/matrix/
 // transfer) arrives as root constants set per frame from FFmpeg stream data.
-// V1 supports BT.709 and BT.601, limited and full range, SDR transfer only.
+#include "HdrColor.hlsli"
 
 cbuffer YuvParams : register(b0)
 {
     float4 colorParams0; // x=limitedRange y=matrix709 z=transferSRGB w=padding
-    uint4 yuvDimensions; // x=width y=height z=nativeHDR w=chroma location (0=legacy)
+    uint4 yuvDimensions; // x=width y=height z=bit0 nativeHDR, bit1 BT2020 primaries; w=chroma location
 };
 
 Texture2D<float> lumaPlane : register(t0);   // R8_UNORM or R16_UNORM
@@ -36,7 +36,10 @@ float3 YuvToRgb(float y, float2 uv)
     float uu=(uv.x*scale-middle)/(colorParams0.x>0.5?span:maximum);
     float vv=(uv.y*scale-middle)/(colorParams0.x>0.5?span:maximum);
 
-    if(colorParams0.y>1.5)return float3(yy+1.4746*vv,yy-0.164553*uu-0.571353*vv,yy+1.8814*uu);
+    if(colorParams0.y>1.5){
+        // BT.2020 non-constant-luminance coefficients.
+        return float3(yy+1.4746*vv,yy-0.164553*uu-0.571353*vv,yy+1.8814*uu);
+    }
 
     if (colorParams0.y > 0.5) {
         // BT.709.
@@ -102,7 +105,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
             nits=1000.0*scene*pow(max(dot(scene,float3(.2627,.6780,.0593)),0),.2);
         }
         float3 linear709=mul(float3x3(1.660491,-0.587641,-0.072850,-0.124550,1.132900,-0.008349,-0.018151,-0.100579,1.118730),nits);
-        if(yuvDimensions.z!=0)rgb=linear709/80.0; // scRGB: 1.0 = 80 nits.
+        if((yuvDimensions.z&1)!=0)rgb=linear709/80.0; // scRGB: 1.0 = 80 nits.
         else{
             // Stable luminance shoulder, fixed 1000-nit reference peak.
             // This is SDR mapping, never advertised as native HDR output.
@@ -119,5 +122,6 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     } else if (colorParams0.z > 0.5) {
         rgb = float3(SrgbDecode(rgb.r), SrgbDecode(rgb.g), SrgbDecode(rgb.b));
     }
+    if(colorParams0.z<3.5&&(yuvDimensions.z&2)!=0)rgb=HdrTo709(rgb);
     linearRgb[dispatchThreadId.xy] = float4(rgb, 1.0);
 }

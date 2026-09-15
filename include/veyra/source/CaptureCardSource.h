@@ -5,7 +5,7 @@
 #include <vector>
 #include "veyra/sink/CaptureAudioSession.h"
 namespace veyra::source {
-struct CaptureFormat {int index=0;unsigned width=0,height=0;double fps=0;std::wstring label;};
+struct CaptureFormat {int index=0;unsigned width=0,height=0;double fps=0;std::wstring label;std::wstring key;};
 struct CaptureDevice {
     std::wstring name;
     // DirectShow moniker DevicePath/display name. This is stable across a
@@ -37,6 +37,7 @@ public:
     // or start audio until the presenter and enhancement graph are ready.
     bool configure(const SourceOpenDesc&);
     bool start();
+    bool reconnect(float gain,unsigned syncMode,int offsetMs);
     bool setAudioGain(float); // call on the graph owner thread; never system volume
     CaptureMetrics metrics()const;
     void videoPresented(double ptsMs,int64_t host100ns,int64_t arrival100ns);
@@ -51,5 +52,9 @@ public:
 private:
     SourceReadStatus readWithWait(pipeline::FramePacket&,const AVFrame**,unsigned milliseconds);
     struct Impl;std::unique_ptr<Impl> p_;
+    SourceOpenDesc reconnectDesc_;
+    std::wstring reconnectFormat_;
+    SourceInfo reconnectInfo_;
+    uint64_t epoch_=1,receivedOffset_=0,deliveredOffset_=0,droppedOffset_=0;
 };
 }

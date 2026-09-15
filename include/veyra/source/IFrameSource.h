@@ -8,6 +8,7 @@
 #include <string>
 
 #include "veyra/pipeline/FramePacket.h"
+#include "veyra/source/DolbyVision.h"
 
 struct AVFrame;
 
@@ -38,6 +39,7 @@ struct SourceInfo {
     std::string containerName;
     std::string videoCodecName;
     std::string videoPixelFormatName;
+    DolbyVisionInfo dolbyVision;
     pipeline::ColorDescription color;
 };
 

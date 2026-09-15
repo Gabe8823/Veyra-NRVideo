@@ -8,10 +8,12 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <thread>
 extern "C" {
 #include <libavutil/frame.h>
 }
 using namespace veyra;
+#include "FileSdrRoundTripCases.h"
 namespace {
 constexpr unsigned width=1920,height=1080;
 // No game image, stream, credentials, enhancement, or visual judgement.
@@ -23,8 +25,9 @@ unsigned luma(unsigned x,unsigned y) {
     return 16+x%220;
 }
 double expectedGray(unsigned code) {
-    const double linear=std::pow((code-16)/219.0,2.4);
-    return 255*(linear<=.0031308?12.92*linear:1.055*std::pow(linear,1/2.4)-.055);
+    // Independent no-effects contract: legal Y' codes become full-range RGB
+    // codes. Do not repeat the production transfer curve in the oracle.
+    return 255*(code-16)/219.0;
 }
 double sampled(const sink::RgbaImage& image,unsigned x,unsigned y,unsigned channel,unsigned w,unsigned h) {
     const double sx=(x+.5)*image.width/w-.5,sy=(y+.5)*image.height/h-.5;
@@ -34,7 +37,7 @@ double sampled(const sink::RgbaImage& image,unsigned x,unsigned y,unsigned chann
     return std::lerp(std::lerp(at(ix,iy),at(ix+1,iy),fx),std::lerp(at(ix,iy+1),at(ix+1,iy+1),fx),fy);
 }
 }
-int main() {
+int wmain(int argc,wchar_t** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     gfx::D3D12DeviceContext ctx;gfx::CommandSlotRing ring;Status status;
@@ -56,7 +59,7 @@ int main() {
         desc.sourceWidth=desc.workWidth=width;desc.sourceHeight=desc.workHeight=height;
         desc.enableNr=desc.enableSr=desc.enableFg=false;desc.noFeatures=true;
         if(!graph.initialize(desc)||!graph.createViews())return 5;
-        pipeline::ColorDescription fallback;fallback.displayReferred709=true;
+        pipeline::ColorDescription fallback;fallback.preserveSdrCodeValues=true;
         auto color=pipeline::resolveFrameColor(*frame,fallback);
         pipeline::EnhanceGraph::FrameOutputs output;
         if(!graph.process(frame.get(),0,true,output,1,&color))return 6;
@@ -73,11 +76,15 @@ int main() {
         const bool ingressOk=grayError<1.1&&clippedEdges==0&&identical;
         std::cout<<"INGRESS_FIDELITY nv12="<<nv12<<" extent="<<image.width<<"x"<<image.height<<" grayMaxError="<<grayError<<" edgeErrors="<<clippedEdges<<" samePlanes="<<identical<<" pass="<<ingressOk<<std::endl;
         failures+=!ingressOk;
-        for(bool compatible:{false,true})for(unsigned w:{1920u,2560u,3840u}) {
-            const unsigned h=w*9/16;
-            HWND window=CreateWindowExW(0,L"STATIC",L"Source fidelity diagnostic",WS_POPUP,0,0,w,h,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+        for(bool compatible:{false,true}) {
+            HWND window=CreateWindowExW(0,L"STATIC",L"Source fidelity diagnostic",WS_POPUP,0,0,1920,1080,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
             engine::VideoPresenter presenter;
-            if(!window||!presenter.open(ctx,window,graph,compatible)||!presenter.present(ctx,ring,graph,output.videoSlot,false))return 8;
+            if(!window||!presenter.open(ctx,window,graph,compatible))return 8;
+            for(unsigned w:{1920u,2560u,3840u,1920u,2560u,1920u}) {
+            const unsigned h=w*9/16;
+            if(!SetWindowPos(window,nullptr,0,0,w,h,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))return 8;
+            std::this_thread::sleep_for(std::chrono::milliseconds(110));
+            if(!presenter.present(ctx,ring,graph,output.videoSlot,false))return 8;
             sink::RgbaImage displayed;
             if(!presenter.readPresentedFrameForTest(ctx,ring,displayed)||displayed.width!=w||displayed.height!=h)return 9;
             double maxError=0,sum=0;
@@ -87,9 +94,12 @@ int main() {
             }
             const bool ok=maxError<2;
             std::cout<<"PRESENT_FIDELITY nv12="<<nv12<<" compatible="<<compatible<<" extent="<<w<<"x"<<h<<" maxError="<<maxError<<" meanError="<<sum/(double(w)*h*3)<<" pass="<<ok<<std::endl;
-            failures+=!ok;ring.drainQueue();presenter.close();DestroyWindow(window);
+            failures+=!ok;
+            }
+            ring.drainQueue();presenter.close();DestroyWindow(window);
         }
         output={};ring.drainQueue();graph.shutdown();
     }
+    if(argc>1)failures+=fileSdrRoundTripCases(ctx,ring,argv[1]);
     ring.shutdown();ctx.shutdown();CoUninitialize();return failures?1:0;
 }

@@ -2172,3 +2172,38 @@ WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer
 ## 2026-09-15 用户集中反馈总修复方案
 
 用户汇总14项问题：采集卡选择记忆、播放器seek/流畅性、UI闪烁、采集断连重连、全屏控制、HDR/SDR发灰、NR内部处理分辨率、OBS resize回归、Dolby Vision、FG后端失败、XeSS计时、同步/增强冗余、40系过载、视频导出队列与BT.2020错误、PS5串流增强初始化失败。已建立 `docs/USER_ISSUES_REPAIR_PLAN_2026-09-15.md`，按“不可用恢复→颜色→交互→性能→导出→Dolby Vision”分批施工，记录每项证据、验收合同和未验证边界。本轮仅建立方案，未修改代码、未构建、未发布；后续按批次逐项更新实际结果，不能把方案文档当作修复完成证明。
+
+## 2026-09-15 集中反馈修复本地候选
+
+用户授权目标模式、独立分支和全部修复；从 `6206b5a` 建立 `codex/user-issues-repair-20260915`。保留此前采集同步和音频连续性修复，本次交付为可回退的本地候选，不等同14项已在反馈者硬件全部验收。逐项实现、证据及剩余项见 `docs/USER_ISSUES_REPAIR_PLAN_2026-09-15.md` 第8至10节。
+
+修改范围：`CapturePanel`/新增 `CapturePreferenceStore` 保存稳定设备及格式选择；`CaptureCardSource` 和 `WasapiAudioInput` 同设备退避恢复；`AppShell` 修正视频GDI重绘及方向键seek；`EnhancementSettings`/`ResolutionPlan`/设置UI增加480/720/900/1440档。`MediaFileSource` 清理过期seek结果并记录首次呈现时间，新增 `DolbyVision.h` 区分配置及兼容基础层。颜色元数据和三个输入shader补显示参考BT.709及SDR BT.2020 NCL；`VideoExportJob` 使用实际首帧颜色合同。`PresentSink` 接受合法flip模式替代并保留暂时resize失败时的缓冲；`EngineController`/`EnhanceGraph`/新增 `BackendRecovery` 分组件恢复，XeSS呈现失败时重建调度器和交换链。GPU计时按外层循环消费，FG恢复预算使用同帧实际GPU执行区间。对应单元、UI、GPU颜色、呈现及输入测试一并更新。
+
+实际验证命令与结果：
+
+- `cmd.exe /c out\build\veyra-build-x64-release.cmd`，最终exit0，日志 `logs/user-issues-build-20260915-k.log`；构建目录 `out/build/audio-continuity-repair-20260915`，RemotePlay ON，FFmpeg仍为 `C:/veyra-deps/ffmpeg-ps5-dav1d-installed`，保留PS5 slice补丁。
+- 构建目录下 `veyra_repair_contract_tests.exe`：137项失败0；`veyra_ui_contract_tests.exe <独立输出目录>`、`veyra_wasapi_input_tests.exe --invalid`、`veyra_source_fidelity_tests.exe` 均exit0。证据为 `logs/user-issues-contract-i.log`、`user-issues-ui-j.log`、`user-issues-wasapi-invalid-i.log`、`user-issues-resize-i.log`。普通/捕获兼容模式下同窗口反复1920/2560/3840 resize有真实GPU读回检查。
+- 经 `scripts/run-short-test.ps1` 限制180秒执行 `veyra_live_presentation_tests.exe <用户4K文件> <独立日志目录> --backend-recovery`：12项通过，`logs/user-issues-backend-recovery-k.stdout.log` 和 `logs/user-issues-backend-recovery-k/engine.log`。真实NR/XeSS启用、注入初始化/运行/呈现故障、恢复基础播放、手动重启XeSS同会话成功。NGX Init/CreateFeature18返回 `0x1 Success`，NVOF Create状态0；注入故障不冒充用户实卡故障复现。
+- 同一呈现测试的 `--seek-stress`：用户4K视频6次远距跳转首次呈现157至339ms，暂停最新目标约222ms；`logs/user-issues-seek-j.log` 及同名目录。无修前对照，不宣称PotPlayer级速度。`--file-fg-recovery` 注入70ms主循环阻塞后恢复生成，约13→46fps，生成约19fps，`logs/user-issues-fg-recovery-h.log`；不是稳定60fps或RTX40实卡证明。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.ps1 -Root . -BuildDirectory out/build/audio-continuity-repair-20260915`：最终exit0，47.98秒，`logs/delivery/23d9cf72ba7a463aacda42f56be591e3/result.json`。实际1080/原生4K NR/NVOF、GUI播放/暂停seek、图片、H.264/HEVC原生4K 2X完整帧数与音轨、取消检查通过；实卡采集明确待验收。
+- HDR GPU颜色检查见 `logs/user-issues-hdr-color-20260915.log`。另经短测脚本60秒上限执行 `veyra.exe out/hdr-audio-fixtures/pq-tagged-51.mp4 --no-nr --no-sr --no-fg --hevc --export-out logs/user-issues-hdr-export-k.mp4`：exit0；已安装外部ffprobe完整计数得到HEVC Main10/yuv420p10le/BT.2020 NCL/PQ/30帧、AAC 6声道5.1。日志 `logs/user-issues-hdr-export-k.stdout.log` 与 `logs/user-issues-hdr-export-k-app.log`。
+
+中途失败如实保留：ResetReason枚举及缺少标准头导致编译失败后修正；backend-recovery-i因测试参数白名单遗漏exit2，修正后j/k通过。首次ffprobe路径不存在，改用已安装Gyan CLI完成检查。修改后重新跑相关恢复及delivery，没有把失败当成功。
+
+候选入口 `out/start-user-issues-candidate.cmd`，实际EXE为 `out/build/audio-continuity-repair-20260915/veyra.exe`，SHA256 `9DC754D09BB3835E605D32A8825040DFD25A24669D81789B8924D47351EEBAD3`。根目录旧 `Veyra.cmd` 未改，不代表桌面原入口已更新。运行组件/SDK/配置/测试媒体/日志保持本地忽略，不加入提交；本轮不升版本、不push、不发布、不关机。
+
+尚未交付或验收：原生Dolby Vision RPU/增强层及输出、真实DV素材；XeSS SDK内部精确GPU时间；DirectShow音频pin单独初始化失败后的独立热重建；独立预解码worker及PotPlayer速度对照。物理采集卡拔插、4070/4070Ti、OBS真实hook、PS5重连和全屏方向键人工实操未执行。不能声称全部用户发灰、过载及导出异常已经根治；下一步为候选在问题设备上的复测和原始日志核对。
+
+## 2026-09-15 同视频无增强颜色偏暗：推翻旧预期并修复
+
+用户截图反馈普通播放器与Veyra无增强画面颜色不同，要求从链路定位而非提高对比度。确认用户运行本地候选，原媒体为Downloads内 `OpenAI-This_is_GPT-6_Astra__10368kbps-20260906113552.mp4`，1080p H.264/yuv420p、未标记颜色参数。生产推定limited/BT.709。发现上一批文件入口使用pow2.4（BT.1886理想黑点），输出仍sRGB，两曲线不互逆而压暗。原SourceFidelity期望值也执行同样曲线，错误地把算法一致性当成信号保真；撤回前文以该结果宣称文件中灰已正确修复的结论。
+
+先将灰阶测试预期改成独立的limited→full代码值恒等关系，旧版exit1；新增 `FileSdrRoundTripCases.h` 用生产MediaFileSource软/硬解同一文件60秒后的同帧，独立YUV矩阵计算RGB预期并读回图输出和真正呈现缓冲。修前软/硬解同PTS513137900：平均误差6.74098级、最大13.3126级且全部偏暗；图至呈现误差0。修后平均0.256191、最大0.629614、平均偏差-0.0670757级；灰阶最大0.575342级、呈现误差0，exit0。证据 `logs/sdr-file-before-20260915.stdout.log` 与 `logs/sdr-file-after-20260915.stdout.log`，不将诊断GPU回读加入生产路径。
+
+实现 `ColorDescription::preserveSdrCodeValues`，文件和采集用与现有sRGB输出互逆的工作解码，同时保留源transfer元数据。修正采集显式BT.709错误分支，设备格式匹配比较包含新策略；日志补充实际工作transfer。PS5旧参考显示策略及PQ/HLG路径未改，不拿本例判断它们是否正确。完整根因和边界见 `docs/SDR_CODE_VALUE_ROUNDTRIP_REPAIR_2026-09-15.md`。
+
+实际构建 `cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0（75/75），`logs/sdr-roundtrip-build-20260915.log`。用户明确关闭软件后替换候选EXE。`veyra_source_fidelity_tests.exe <用户文件>` 经90秒短测限制exit0；`veyra_hdr_color_tests.exe` 同样限90秒exit0，涵盖HDR/SDR/采集GPU色块；`veyra_repair_contract_tests.exe` 137项失败0；`veyra_capture_color_tests.exe` 限30秒exit0。首次误拼为capture_color_contract_tests导致命令未执行，之后按CMake真实名称纠正；不采用那次残留LASTEXITCODE。
+
+再执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.ps1 -Root . -BuildDirectory out/build/audio-continuity-repair-20260915` exit0，结果 `logs/delivery/3c32cadc5f774f6eaae43efee5d02211/result.json`，真实NR/NVOF、4K导出等短测通过；不能替代问题设备实测。EXE SHA256 `EFA748C7F7D64DF3E9ECE814CE56D2015BC976192F00195443C2B0E17A8EDA96`，入口 `out/start-user-issues-candidate.cmd`。git diff --check通过；版本、runtime及发布状态不变。
+
+下一步唯一用户验收：同原视频、关闭所有效果对照新候选。未核对其他播放器ICC/驱动视频增强/显示设置，不能宣称所有播放器屏幕像素绝对相同，也不能将本次SDR修复扩大为全部HDR发灰根治。该修复与此前14项候选一并作为当前独立分支的本地可回退记录，原基线6206b5a保留，不push、不发布。

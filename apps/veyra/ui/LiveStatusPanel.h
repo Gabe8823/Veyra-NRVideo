@@ -147,6 +147,7 @@ inline LRESULT CALLBACK proc(HWND h,UINT message,WPARAM wp,LPARAM lp){
             rows.emplace_back(L"转换峰值 / 超满幅 / 异常",std::format(L"{:.4f} / {} / {}",s.captureAudio.inputPeak,s.captureAudio.overRangeSamples,s.captureAudio.nonFiniteSamples+s.captureAudio.invalidPaddingSamples));
         }
         if(!s.colorStatus.empty())rows.emplace_back(L"实际颜色链路",s.colorStatus);
+        if(!s.sourceNotice.empty())rows.emplace_back(L"片源兼容",s.sourceNotice);
         if(!s.backendWarning.empty())rows.emplace_back(L"后端状态",s.backendWarning);
         if(!s.captureAudio.error.empty())rows.emplace_back(L"采集音频异常",s.captureAudio.error);
         }

@@ -98,13 +98,15 @@ int wmain(int argc,wchar_t**argv){
     }
 #endif
     SetEnvironmentVariableW(L"VEYRA_VERBOSE_FRAME_LOGS",L"1");
-    if(argc!=3&&!(argc==4&&(wcscmp(argv[3],L"--nr-first")==0||wcscmp(argv[3],L"--seek-stress")==0||wcscmp(argv[3],L"--half-rate")==0||wcscmp(argv[3],L"--overload")==0||wcscmp(argv[3],L"--overload-baseline")==0||wcscmp(argv[3],L"--file-overload")==0||wcscmp(argv[3],L"--source-gap")==0||wcscmp(argv[3],L"--file-endpoint")==0||wcscmp(argv[3],L"--file-continuity")==0||wcscmp(argv[3],L"--file-fg-recovery")==0||wcscmp(argv[3],L"--reset-rollback")==0)))return 2;SetProcessDPIAware();CoInitializeEx(nullptr,COINIT_MULTITHREADED);
+    if(argc!=3&&!(argc==4&&(wcscmp(argv[3],L"--backend-recovery")==0||wcscmp(argv[3],L"--nr-first")==0||wcscmp(argv[3],L"--seek-stress")==0||wcscmp(argv[3],L"--half-rate")==0||wcscmp(argv[3],L"--overload")==0||wcscmp(argv[3],L"--overload-baseline")==0||wcscmp(argv[3],L"--file-overload")==0||wcscmp(argv[3],L"--source-gap")==0||wcscmp(argv[3],L"--file-endpoint")==0||wcscmp(argv[3],L"--file-continuity")==0||wcscmp(argv[3],L"--file-fg-recovery")==0||wcscmp(argv[3],L"--reset-rollback")==0)))return 2;SetProcessDPIAware();CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     std::filesystem::create_directories(argv[2]);Logger::instance().openFile((std::filesystem::path(argv[2])/"engine.log").wstring());Logger::instance().setConsoleEnabled(false);
     HWND window=CreateWindowExW(0,L"STATIC",L"Live scheduler replay",WS_POPUP,0,0,960,540,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     if(!window)return 3;engine::EngineController engine;engine::PlayerOptions options;options.nr=false;options.fg=false;options.captureReplayForTest=true;
     const bool nrFirst=argc==4&&wcscmp(argv[3],L"--nr-first")==0;
     if(nrFirst){options.captureReplayForTest=false;options.nr=options.sr=options.fg=true;options.realtime=false;options.fgMultiplier=2;options.settings.lowLatency=true;options.settings.videoSrQuality=2;engine.setVolume(0,true);}
     const bool seekStress=argc==4&&wcscmp(argv[3],L"--seek-stress")==0;
+    const bool backendRecovery=argc==4&&wcscmp(argv[3],L"--backend-recovery")==0;
+    if(backendRecovery){options.captureReplayForTest=false;options.nr=true;options.fg=false;engine.setVolume(0,true);SetEnvironmentVariableW(L"VEYRA_TEST_NR_INIT_FAILURE",L"1");}
     if(seekStress){options.captureReplayForTest=false;options.nr=options.fg=true;options.realtime=false;options.fgMultiplier=3;engine.setVolume(0,true);}
     const bool halfRate=argc==4&&wcscmp(argv[3],L"--half-rate")==0;
     const bool sourceGap=argc==4&&wcscmp(argv[3],L"--source-gap")==0;
@@ -123,6 +125,31 @@ int wmain(int argc,wchar_t**argv){
     int failures=0;auto check=[&](bool pass,const char* s){std::cout<<(pass?"PASS ":"FAIL ")<<s<<std::endl;if(!pass)++failures;};
     auto until=[&](auto predicate,int seconds=8){auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(seconds);while(std::chrono::steady_clock::now()<deadline){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}auto s=engine.snapshot();if(s.failed){std::wcerr<<s.status<<'\n';return false;}if(predicate(s))return true;std::this_thread::sleep_for(5ms);}return false;};
     engine.open(window,argv[1],options);
+    if(backendRecovery){
+        check(until([](const auto& s){return s.frames>20&&!s.applied.nr&&!s.backendWarning.empty();},25),"injected NR init failure retains real basic playback");
+        SetEnvironmentVariableW(L"VEYRA_TEST_NR_INIT_FAILURE",nullptr);
+        auto enabled=engine.snapshot().applied;enabled.nr=true;
+        check(engine.requestSettings(enabled),"retry NR explicitly after initialization failure");
+        check(until([](const auto& s){return !s.applying&&s.applied.nr&&s.nrActive;},25),"real NR runs after explicit retry");
+        const auto before=engine.snapshot();
+        SetEnvironmentVariableW(L"VEYRA_TEST_NR_RUNTIME_FAILURE",L"1");
+        check(until([&](const auto& s){return s.frames>before.frames+20&&!s.applied.nr&&!s.backendWarning.empty();},25),"injected NR Evaluate failure releases commands and keeps playback advancing");
+        SetEnvironmentVariableW(L"VEYRA_TEST_NR_RUNTIME_FAILURE",nullptr);
+        enabled=engine.snapshot().applied;enabled.nr=true;
+        check(engine.requestSettings(enabled),"retry NR after runtime recovery");
+        check(until([](const auto& s){return !s.applying&&s.applied.nr&&s.nrActive;},25),"real NR resumes in same session after runtime recovery");
+        enabled=engine.snapshot().applied;enabled.nr=false;enabled.multiplier=2;enabled.frameGenerationBackend=engine::FrameGenerationBackend::XeSS;
+        check(engine.requestSettings(enabled),"enable real XeSS before presentation fault");
+        check(until([](const auto& s){return !s.applying&&s.fgActive&&s.generated>10;},25),"XeSS generates real frames before injected fault");
+        const auto xessBefore=engine.snapshot();
+        SetEnvironmentVariableW(L"VEYRA_TEST_XESS_PRESENT_FAILURE",L"1");
+        check(until([&](const auto& s){return s.frames>xessBefore.frames+20&&s.applied.multiplier==1&&!s.applying&&!s.backendWarning.empty();},25),"XeSS presentation fault recovers through new scheduler and swapchain");
+        SetEnvironmentVariableW(L"VEYRA_TEST_XESS_PRESENT_FAILURE",nullptr);
+        enabled=engine.snapshot().applied;enabled.multiplier=2;
+        check(engine.requestSettings(enabled),"explicitly retry XeSS after presentation recovery");
+        check(until([](const auto& s){return !s.applying&&s.fgActive&&s.generated>10;},25),"XeSS generates again in the same session");
+        engine.stop();check(until([&](const auto&){return engine.idle();},5),"recovered session drains");DestroyWindow(window);CoUninitialize();return failures?1:0;
+    }
     if(nrFirst){
         check(until([](const auto& s){return s.frames>30&&s.srActive&&s.nrActive&&s.fgActive;},25),"NR-first RTX Video SR and FG execute");
         auto snapshot=engine.snapshot();check(snapshot.metrics.resolution.nr==snapshot.metrics.resolution.source,"NR processes source extent before SR");

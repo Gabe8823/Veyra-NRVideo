@@ -32,7 +32,7 @@ public:
             }
             D3D12_RANGE written{0,0};readback_->Unmap(0,&written);if(p.fence>=lastCollectedFence_){last_=m;lastCollectedFence_=p.fence;}
             if(recordCompleted_){
-                if(completed_.size()==64){completed_.pop_front();++overflow_;if((overflow_&(overflow_-1))==0)log::warn("gpu-timestamp",std::format("completed sample queue overflow={}",overflow_));}
+                if(completed_.size()==64){completed_.pop_front();++overflow_;if((overflow_&(overflow_-1))==0)log::warn("gpu-timestamp",std::format("timing telemetry overflow={} (old timing samples dropped, not video frames)",overflow_));}
                 completed_.push_back({m.identity,m.gpu});
             }p.fence=0;
         }

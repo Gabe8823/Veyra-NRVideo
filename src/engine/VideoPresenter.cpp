@@ -20,15 +20,18 @@ bool VideoPresenter::open(gfx::D3D12DeviceContext& ctx,HWND window,pipeline::Enh
 }
 void VideoPresenter::refresh(ID3D12Device* device){for(unsigned i=0;i<3;++i){Microsoft::WRL::ComPtr<ID3D12Resource> bb;if(SUCCEEDED(sink_.swapChain()->GetBuffer(i,IID_PPV_ARGS(&bb))))device->CreateRenderTargetView(bb.Get(),nullptr,{rtvs_->GetCPUDescriptorHandleForHeapStart().ptr+size_t(i)*inc_});}}
 bool VideoPresenter::present(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& ring,pipeline::EnhanceGraph& graph,unsigned slot,bool generated,bool referencesValid,int comparison,bool baseReference,float split,pipeline::FrameIdentity identity,PreviewView view) {
+    xessFailed_=false;
     RECT rc{};GetClientRect(window_,&rc);if(rc.right<1||rc.bottom<1)return true;
     const auto now=std::chrono::steady_clock::now();
     const auto deferUntil=uint64_t(uintptr_t(GetPropW(window_,L"Veyra.ResizeDeferUntil")));
     if((unsigned(rc.right)!=sink_.width()||unsigned(rc.bottom)!=sink_.height())&&GetTickCount64()>=deferUntil&&now-lastResize_>=std::chrono::milliseconds(100)) {
         if(!ring.drainQueue())return false;sink_.resize(rc.right,rc.bottom);
-        if(sink_.bufferWidth()!=unsigned(rc.right)||sink_.bufferHeight()!=unsigned(rc.bottom))return false;
+        // A capture hook may temporarily retain a DXGI buffer. Keep the old
+        // valid buffers and let DXGI scale them until a later resize succeeds.
+        if(!sink_.currentBackBuffer()||FAILED(ctx.device()->GetDeviceRemovedReason()))return false;
         refresh(ctx.device());lastResize_=now;xessWasEnabled_=false;
     }
-    if(sink_.xess()&&!sink_.xess()->beginFrame())return false;
+    if(sink_.xess()&&!sink_.xess()->beginFrame()){xessFailed_=true;return false;}
     Status st=Status::Ok;uint32_t commandSlot=0;auto* list=ring.acquireNext(commandSlot,st);if(!list)return false;
     gpuTimer_.frame(identity.sourceFrameId?identity:pipeline::FrameIdentity{0,0,submittedCount()+1},ctx.fence());gpuTimer_.mark(list,diagnostics::GpuStage::Blit);
     auto* source=generated?graph.generatedFrameResource(slot):graph.videoFrameResource(slot);auto* bb=sink_.currentBackBuffer();if(!bb)return false;
@@ -59,6 +62,9 @@ bool VideoPresenter::present(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& 
     }
     for(auto& b:barriers)std::swap(b.Transition.StateBefore,b.Transition.StateAfter);list->ResourceBarrier(2,barriers);
     if(auto* xess=sink_.xess()){
+        if(GetEnvironmentVariableW(L"VEYRA_TEST_XESS_PRESENT_FAILURE",nullptr,0)>0){
+            veyra::log::warn("backend-test","Injected XeSS tagging failure with recorded commands");xessFailed_=true;return false;
+        }
         const float fit=std::min(float(sink_.bufferWidth())/graph.workWidth(),float(sink_.bufferHeight())/graph.workHeight());
         const LONG w=std::max(1L,LONG(std::lround(graph.workWidth()*fit))),h=std::max(1L,LONG(std::lround(graph.workHeight()*fit)));
         const LONG left=(LONG(sink_.bufferWidth())-w)/2,top=(LONG(sink_.bufferHeight())-h)/2;
@@ -80,14 +86,15 @@ bool VideoPresenter::present(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& 
                 toCopy[i].Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
             }
             list->ResourceBarrier(3,toCopy);
-            if(!xess->tag(list,bb,motion,depth,{left,top,left+w,top+h},true,reset,elapsed))return false;
+            if(!xess->tag(list,bb,motion,depth,{left,top,left+w,top+h},true,reset,elapsed)){xessFailed_=true;return false;}
             for(auto& barrier:toCopy)std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
             list->ResourceBarrier(3,toCopy);
-        }else if(!xess->tag(list,bb,motion,depth,{left,top,left+w,top+h},false,reset,elapsed))return false;
+        }else if(!xess->tag(list,bb,motion,depth,{left,top,left+w,top+h},false,reset,elapsed)){xessFailed_=true;return false;}
         lastXessFrame_=now;lastXessIdentity_=identity;xessWasEnabled_=enabled;
     }
     gpuTimer_.mark(list,diagnostics::GpuStage::Blit,true);gpuTimer_.resolve(list);
-    if(!ring.submitAndSignal(commandSlot))return false;gpuTimer_.submitted(ring.lastSignaledValue());lastBuffer_=sink_.swapChain()->GetCurrentBackBufferIndex();hasPresented_=true;return sink_.present(st);
+    if(!ring.submitAndSignal(commandSlot))return false;gpuTimer_.submitted(ring.lastSignaledValue());lastBuffer_=sink_.swapChain()->GetCurrentBackBufferIndex();hasPresented_=true;
+    const bool presented=sink_.present(st);xessFailed_=sink_.xessFailed();return presented;
 }
 bool VideoPresenter::readPresentedFrameForTest(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& ring,sink::RgbaImage& image){
     if(!hasPresented_||!sink_.swapChain()||!ring.drainQueue())return false;

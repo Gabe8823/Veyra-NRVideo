@@ -63,6 +63,7 @@ EnhanceGraph::~EnhanceGraph()
 // ---------------------------------------------------------------------------
 bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
 {
+    failedBackend_=engine::FailedBackend::Infrastructure;
     if(!desc.protection.validate().empty())return false;
     if(desc.srMotionProbe){
         const auto d=desc.srMotionProbe->GetDesc();ComPtr<ID3D12Device> device;
@@ -114,11 +115,17 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     if(!gpuTimer_.initialize(context_.device(),context_.directQueue()))veyra::log::warn("gpu-timestamp","GPU timing unavailable");
     if (!createResources()) return false;
     if (!initZeroAndDepthTextures()) return false;
-    if (!initNvof()) return false;
+    if (!initNvof()) { failedBackend_=engine::FailedBackend::OpticalFlow; return false; }
+    if(nrEnabled_&&GetEnvironmentVariableW(L"VEYRA_TEST_NR_INIT_FAILURE",nullptr,0)){
+        failedBackend_=engine::FailedBackend::Nr;
+        veyra::log::error("backend-recovery-test","test-only NR initialization rejection before SDK call; not a hardware failure");return false;
+    }
     if (!initNgxFeatures()) return false;
+    failedBackend_=engine::FailedBackend::Infrastructure;
     if (!createComputePasses()) return false;
 
     initialized_ = true;
+    failedBackend_=engine::FailedBackend::None;
     veyra::log::info("graph", std::format("initialized src={}x{} work={}x{} sr={} nr={} fg={} nvof={}",
         srcW_, srcH_, workW_, workH_, srEnabled_ ? 1 : 0, nrEnabled_ ? 1 : 0,
         fgEnabled_ ? 1 : 0, (nvof_ && nvof_->initialized()) ? 1 : 0));
@@ -339,6 +346,7 @@ bool EnhanceGraph::initNvof()
 
 bool EnhanceGraph::initNgxFeatures()
 {
+    failedBackend_=engine::FailedBackend::NgxCore;
     if (desc_.noNgx || desc_.noFeatures || (!nrEnabled_&&!srEnabled_&&!fgEnabled_)) {
         veyra::log::info("graph", "NGX core/features skipped by disabled-feature configuration");
         return true;
@@ -375,6 +383,7 @@ bool EnhanceGraph::initNgxFeatures()
     fgCapsAvailable_ = false;
     fgMultiFrameMax_ = 0;
     if (fgEnabled_ && desc_.frameGenerationBackend==engine::FrameGenerationBackend::Dlss) {
+    failedBackend_=engine::FailedBackend::Fg;
     fgBackend_ = std::make_unique<ngx::DlssFgBackend>();
     ngx::DlssFgBackend::Capability fgCaps{};
     const bool fgAvailable = fgBackend_->queryCapability(*coreHost_, fgCaps, st);
@@ -390,6 +399,7 @@ bool EnhanceGraph::initNgxFeatures()
     }
 
     if(nrEnabled_){
+    failedBackend_=engine::FailedBackend::Nr;
     if(desc_.nrRuntime!=engine::NrRuntime::Original&&desc_.nrRuntime!=engine::NrRuntime::Community&&desc_.nrRuntime!=engine::NrRuntime::Ampere)return false;
     auto nrDirectory=std::filesystem::path(desc_.runtimeAbsPath);if(desc_.nrRuntime==engine::NrRuntime::Community)nrDirectory/=L"nr-community";
     if(desc_.nrRuntime==engine::NrRuntime::Ampere)nrDirectory/=L"nr-ampere";
@@ -404,6 +414,7 @@ bool EnhanceGraph::initNgxFeatures()
         return false;
     }
     }
+    failedBackend_=engine::FailedBackend::NgxCore;
     ngxParams_ = coreHost_->allocateParameters(st);
     if (ngxParams_ == nullptr) return false;
 
@@ -426,14 +437,15 @@ bool EnhanceGraph::initNgxFeatures()
         pb.setI32(p::kPerfQualityValue, 1);
         pb.setU32(p::kCreationNodeMask, 1); pb.setU32(p::kVisibilityNodeMask, 1);
         ID3D12GraphicsCommandList* list = ring_.acquire(0, st);
-        if (list == nullptr) return false;
+        if (list == nullptr) { failedBackend_=engine::FailedBackend::Infrastructure; return false; }
+        failedBackend_=engine::FailedBackend::Nr;
         if (!nrAdapter_->snippetCreateFeature(list, ngxParams_, &nrHandle_, nrResult_, nrSeh_) ||
             nrResult_ != static_cast<uint64_t>(NVSDK_NGX_Result_Success)) {
             veyra::log::error("graph", std::format("NR create failed 0x{:X}", nrResult_));
             return false;
         }
-        (void)ring_.submitAndSignal(0);
-        (void)ring_.waitIdle();
+        failedBackend_=engine::FailedBackend::Infrastructure;
+        if(!ring_.submitAndSignal(0)||!ring_.waitIdle())return false;
     }
 
     if (srEnabled_ && !desc_.noFeatures) {
@@ -442,14 +454,15 @@ bool EnhanceGraph::initNgxFeatures()
         sd.outputWidth = workW_; sd.outputHeight = workH_;
         sd.perfQuality = 1; sd.enableOutputSubrects = false;
         ID3D12GraphicsCommandList* list = ring_.acquire(0, st);
-        if (list == nullptr) return false;
+        if (list == nullptr) { failedBackend_=engine::FailedBackend::Infrastructure; return false; }
+        failedBackend_=engine::FailedBackend::Sr;
         if(desc_.videoSrQuality){videoSrBackend_=std::make_unique<ngx::VideoSrBackend>();if(!videoSrBackend_->create(*coreHost_,list))return false;veyra::log::info("video-sr",std::format("selected quality={} input={}x{} output={}x{}",desc_.videoSrQuality,srcW_,srcH_,workW_,workH_));}
         else if (!srBackend_->create(*coreHost_, list, ngxParams_, sd, st) || !srBackend_->created()) {
             veyra::log::error("graph", "SR create failed");
             return false;
         }
-        (void)ring_.submitAndSignal(0);
-        (void)ring_.waitIdle();
+        failedBackend_=engine::FailedBackend::Infrastructure;
+        if(!ring_.submitAndSignal(0)||!ring_.waitIdle())return false;
     }
 
     // Still images have no temporal pair and must not depend on FG support.
@@ -462,13 +475,14 @@ bool EnhanceGraph::initNgxFeatures()
         fd.renderWidth = workW_; fd.renderHeight = workH_;
         fd.backbufferFormat = outputFormat();
         ID3D12GraphicsCommandList* list = ring_.acquire(0, st);
-        if (list == nullptr) return false;
+        if (list == nullptr) { failedBackend_=engine::FailedBackend::Infrastructure; return false; }
+        failedBackend_=engine::FailedBackend::Fg;
         if (!fgBackend_->create(*coreHost_, list, ngxParams_, fd, st) || !fgBackend_->created()) {
             veyra::log::error("graph", std::format("FG create failed 0x{:X}", fgBackend_->createResult()));
             return false;
         }
-        (void)ring_.submitAndSignal(0);
-        (void)ring_.waitIdle();
+        failedBackend_=engine::FailedBackend::Infrastructure;
+        if(!ring_.submitAndSignal(0)||!ring_.waitIdle())return false;
 
         ID3D12GraphicsCommandList* wlist = ring_.acquire(0, st);
         if (wlist == nullptr) return false;
@@ -502,7 +516,7 @@ bool EnhanceGraph::initNgxFeatures()
             warmOk=fgBackend_->evaluate(wlist,ngxParams_,fe,st)&&warmOk;
             D3D12_RESOURCE_BARRIER u{};u.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;u.UAV.pResource=fe.outputInterpolated;wlist->ResourceBarrier(1,&u);
         }
-        if(!warmOk)return false;
+        if(!warmOk){failedBackend_=engine::FailedBackend::Fg;return false;}
         for (int i = 0; i < 4; ++i) b[i].Transition.StateBefore = b[i].Transition.StateAfter;
         b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
         b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
@@ -523,7 +537,7 @@ bool EnhanceGraph::createComputePasses()
     if(!residualPass_.loadShader("NrResidualComposite.dxil",cs)||!residualPass_.create(context_.device(),cs,4,3,1,24))return false;
     if(!flowAdaptPass_.loadShader("FlowAdapt.dxil",cs)||!flowAdaptPass_.create(context_.device(),cs,3,1,1))return false;
     if (!yuvPass_.loadShader("YuvToLinearRgb.dxil", cs) || !yuvPass_.create(context_.device(), cs, 8, 2, 1)) return false;
-    if((desc_.rgbInput||desc_.yuy2Input)&&(!rgbPass_.loadShader(desc_.yuy2Input?"Yuy2ToLinear.dxil":"RgbToLinear.dxil",cs)||!rgbPass_.create(context_.device(),cs,desc_.yuy2Input?8:4,1,1)))return false;
+    if((desc_.rgbInput||desc_.yuy2Input)&&(!rgbPass_.loadShader(desc_.yuy2Input?"Yuy2ToLinear.dxil":"RgbToLinear.dxil",cs)||!rgbPass_.create(context_.device(),cs,8,1,1)))return false;
     if (!encPass_.loadShader("ParityEncode.dxil", cs) || !encPass_.create(context_.device(), cs, 8, 1, 1)) return false;
     if (!decPass_.loadShader("ParityDecode.dxil", cs) || !decPass_.create(context_.device(), cs, 8)) return false;
     if (!blitPass_.loadShader("ScaleBlit.dxil", cs) || !blitPass_.create(context_.device(), cs, 19, 1, 1)) return false;
@@ -676,6 +690,7 @@ bool EnhanceGraph::createViews()
 // ---------------------------------------------------------------------------
 bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, FrameOutputs& out, uint64_t sourceFrameId, const ColorDescription* color, bool retainReferences, const FgAdmission& admitFg)
 {
+    failedBackend_=engine::FailedBackend::Infrastructure;
     out = FrameOutputs{};
     out.ptsMs = ptsMs;
     if(!sourceFrameId)sourceFrameId=realFrameIndex_+1;
@@ -694,11 +709,11 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     if(desc_.hdrInput&&!resolved.isHdrPath()){
         veyra::log::error("hdr","HDR source transfer changed to SDR; reopen/rebuild required");return false;
     }
-    if(resolved.matrix==YuvMatrix::BT2020CL||resolved.transfer==TransferFunction::BT2020_10||(resolved.matrix==YuvMatrix::BT2020NCL&&!desc_.hdrInput)){veyra::log::error("graph","BT.2020 input is not supported by the BT.601/709 SDR conversion");return false;}
+    if(resolved.matrix==YuvMatrix::BT2020CL){veyra::log::error("graph","BT.2020 constant-luminance requires a dedicated conversion; refusing NCL substitution");return false;}
     if(resolved.isHdrPath()&&(resolved.matrix!=YuvMatrix::BT2020NCL||resolved.primaries!=ColorPrimaries::BT2020)){
         veyra::log::error("hdr","Unsupported PQ/HLG colorimetry: requires signaled/fallback BT2020 NCL and BT2020 primaries");return false;
     }
-    if(reset||!realFrameIndex_)veyra::log::info("color",std::format("range={} assumed={} matrix={} assumed={} transfer={} assumed={} display709={}",int(resolved.range),resolved.rangeAssumed,int(resolved.matrix),resolved.matrixAssumed,int(resolved.transfer),resolved.transferAssumed,resolved.displayReferred709));
+    if(reset||!realFrameIndex_)veyra::log::info("color",std::format("range={} assumed={} matrix={} assumed={} transfer={} assumed={} display709={} preserveSdrCodes={} workingTransfer={}",int(resolved.range),resolved.rangeAssumed,int(resolved.matrix),resolved.matrixAssumed,int(resolved.transfer),resolved.transferAssumed,resolved.displayReferred709,resolved.preserveSdrCodeValues,workingTransferCode(resolved)));
     if (resolved.isHdrPath()&&(!desc_.hdrInput||desc_.rgbInput||desc_.yuy2Input)) {
         veyra::log::error("graph", "HDR input requires an explicit YUV HDR contract; RGB/YUY2 HDR ingress is unsupported"); return false;
     }
@@ -894,14 +909,14 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     tracker_.transition(list, srcRgba_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     if(desc_.rgbInput||desc_.yuy2Input){
         const float c[8]={uintBits(srcW_),uintBits(srcH_),uintBits(workingTransferCode(resolved)),uintBits(resolved.range==ColorRange::Limited?1u:0u),
-            resolved.range==ColorRange::Full?0.0f:1.0f,resolved.matrix==YuvMatrix::BT601?0.0f:1.0f,0,0};
+            resolved.range==ColorRange::Full?0.0f:1.0f,resolved.matrix==YuvMatrix::BT2020NCL?2.0f:resolved.matrix==YuvMatrix::BT601?0.0f:1.0f,resolved.primaries==ColorPrimaries::BT2020?1.0f:0.0f,0};
         rgbPass_.bind(list,c,gpuHandleOf(rgbPass_,0).ptr,gpuHandleOf(rgbPass_,1).ptr);
         list->Dispatch((srcW_+15)/16,(srcH_+15)/16,1);
     }else{
         const float constants[8] = { resolved.range==ColorRange::Full?0.0f:1.0f,
             resolved.matrix==YuvMatrix::BT2020NCL?2.0f:resolved.matrix==YuvMatrix::BT601?0.0f:1.0f,
             resolved.transfer==TransferFunction::HLG?5.0f:resolved.transfer==TransferFunction::PQ?4.0f:float(workingTransferCode(resolved)), (nv12Texture?(nv12Texture->GetDesc().Format==DXGI_FORMAT_P010?1.0f:0.0f):(desc_.captureBitDepth==16?2.0f:desc_.wideYuvInput()?1.0f:0.0f)),
-            uintBits(srcW_), uintBits(srcH_), uintBits(desc_.hdrOutput?1u:0u),
+            uintBits(srcW_), uintBits(srcH_), uintBits((desc_.hdrOutput?1u:0u)|(resolved.primaries==ColorPrimaries::BT2020?2u:0u)),
             uintBits(resolved.reconstructChroma?std::max(1u,unsigned(resolved.chromaLocation)):0u) };
         yuvPass_.bind(list, constants, gpuHandleOf(yuvPass_, nv12Texture ? 3 + parity * 2 : 0).ptr, gpuHandleOf(yuvPass_, 2).ptr);
         list->Dispatch((srcW_ + 15) / 16, (srcH_ + 15) / 16, 1);
@@ -1010,7 +1025,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         const float enc[8]={uintBits(srcW_),uintBits(srcH_),uintBits(srcW_),uintBits(srcH_),desc_.hdrOutput?3.0f:1.0f,0,0,0};
         blitPass_.bind(list,enc,gpuHandleOf(blitPass_,desc_.nrBeforeSr?18:0).ptr,gpuHandleOf(blitPass_,16).ptr);list->Dispatch((srcW_+15)/16,(srcH_+15)/16,1);tracker_.uavBarrier(list,videoSrInput_.Get());
         tracker_.transition(list,videoSrInput_.Get(),D3D12_RESOURCE_STATE_COMMON);tracker_.transition(list,videoSrOutput_.Get(),D3D12_RESOURCE_STATE_COMMON);
-        if(!videoSrBackend_->evaluate(list,videoSrInput_.Get(),videoSrOutput_.Get(),desc_.videoSrQuality))return false;
+        if(!videoSrBackend_->evaluate(list,videoSrInput_.Get(),videoSrOutput_.Get(),desc_.videoSrQuality)){failedBackend_=engine::FailedBackend::Sr;return false;}
         tracker_.uavBarrier(list,videoSrOutput_.Get());tracker_.transition(list,videoSrOutput_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);tracker_.transition(list,workRgba_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         const float dec[8]={uintBits(workW_),uintBits(workH_),uintBits(workW_),uintBits(workH_),-1,0,0,0};
         if(desc_.hdrOutput){
@@ -1029,6 +1044,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         if(desc_.srMotionProbe)ed.motionVectors=desc_.srMotionProbe;
         ed.reset = reset;
         if (!srBackend_->evaluate(list, ngxParams_, ed, st)) {
+            failedBackend_=engine::FailedBackend::Sr;
             veyra::log::error("graph", "sr evaluate failed");
             return false;
         }
@@ -1112,11 +1128,16 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             if(!injectedFailureConsumed&&desc_.model.style==2&&GetEnvironmentVariableW(L"VEYRA_TEST_REJECT_NR_STYLE2",nullptr,0)){
                 injectedFailureConsumed=true;veyra::log::error("settings-test","injected NR execution rejection before NGX; rollback exercise, not a hardware failure");return false;
             }
+            if(GetEnvironmentVariableW(L"VEYRA_TEST_NR_RUNTIME_FAILURE",nullptr,0)){
+                failedBackend_=engine::FailedBackend::Nr;
+                veyra::log::error("backend-recovery-test","test-only NR runtime rejection before Evaluate; exercises partially recorded command cleanup, not a hardware failure");return false;
+            }
             gpuTimer_.mark(nlist,GpuStage::Nr);
             uint64_t er = 0; uint32_t es = 0;
             if (!nrAdapter_->snippetEvaluateFeature(nlist, nrHandle_, ngxParams_, er, es) ||
                 er != static_cast<uint64_t>(NVSDK_NGX_Result_Success)) {
                 diagnostic.stage="NR Evaluate";diagnostic.ngx=er;diagnostic.seh=es;Logger::diagnosticContext(diagnostic);veyra::log::error("graph", std::format("NR evaluate failed 0x{:X} seh={}", er, es));
+                failedBackend_=engine::FailedBackend::Nr;
                 return false;
             }
             gpuTimer_.mark(nlist,GpuStage::Nr,true);
@@ -1221,7 +1242,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         fe.mvecScaleY=haveFlow?-1.0f/static_cast<float>(workH_):1.0f;
         if(sub==1)gpuTimer_.mark(flist,GpuStage::FgBatch);
         const auto timingStage=static_cast<GpuStage>(unsigned(GpuStage::Fg1)+sub-1);gpuTimer_.mark(flist,timingStage);
-        if(!fgBackend_->evaluate(flist,ngxParams_,fe,st))return false;
+        if(!fgBackend_->evaluate(flist,ngxParams_,fe,st)){failedBackend_=engine::FailedBackend::Fg;return false;}
         ++out.fgEvaluated;
         gpuTimer_.mark(flist,timingStage,true);if(sub==desc_.fgMultiplier-1)gpuTimer_.mark(flist,GpuStage::FgBatch,true);
         tracker_.uavBarrier(flist,genFrame_[generatedSlot].Get());
@@ -1245,6 +1266,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         }
       }
     }
+    failedBackend_=engine::FailedBackend::None;
     if(runFg)fgHistorySkipped_=false;
     uploadFences_[parity]=ring_.lastSignaledValue();
 

@@ -167,7 +167,7 @@ case WM_CREATE:{window=h;font=makeFont(h);items.clear();displayedBackendWarning.
     body=CreateWindowExW(WS_EX_CONTROLPARENT,bodyClass.lpszClassName,L"滚动参数",WS_CHILD|WS_VISIBLE|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,0,88,300,300,h,nullptr,bodyClass.hInstance,nullptr);
     add(L"BUTTON",L"实验性 NVIDIA NR 增强",200,BS_AUTOCHECKBOX|WS_TABSTOP,0,12,12,-1,36);
     add(L"BUTTON",L"超分辨率",201,BS_AUTOCHECKBOX|WS_TABSTOP,0,12,56,-1,36);
-    combo(203,0,104,{L"实时NR · 约1080内部处理",L"原生NR · 高性能成本"});
+    combo(203,0,104,{L"1080p NR · 实时默认",L"原生NR · 高性能成本",L"480p NR",L"720p NR",L"900p NR",L"1440p NR"});
     add(L"STATIC",L"模型参数",1100,0,0,12,146,-1,24);
     for(int i=0;i<12;++i){const int y=174+i*62+(i>=7?32:0);add(L"STATIC",labels[i],1000+i,0,0,12,y,176,28);
         if(i>=4&&i<=6){const int group=i-4,count=group==0?3:2;for(int j=0;j<count;++j){const auto title=group==0?std::to_wstring(j):j==0?std::wstring(L"关闭"):std::wstring(L"开启");button(title.c_str(),700+group*10+j,0,12+j*88,y+28,80);}continue;}

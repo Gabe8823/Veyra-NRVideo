@@ -19,6 +19,7 @@ public:
     uint64_t xessGeneratedCount() const {return sink_.xess()?sink_.xess()->generatedCount():0;}
     uint64_t xessPresentedCount() const {return sink_.xess()?sink_.xess()->presentedCount():0;}
     bool xessActive() const {return sink_.xess()!=nullptr;}
+    bool xessFailed() const {return xessFailed_;}
     // Sustained under-rate may suppress SDK-owned XeSS-FG generation over a
     // stable interval (xefgSwapChainSetEnabled); re-enabling goes through the
     // per-frame history reset, never a per-frame toggle.
@@ -39,6 +40,7 @@ private:
     std::chrono::steady_clock::time_point lastXessFrame_{};
     pipeline::FrameIdentity lastXessIdentity_{};
     bool xessWasEnabled_=false;
+    bool xessFailed_=false;
     bool xessGenerationSuppressed_=false;
     void refresh(ID3D12Device*);
 };

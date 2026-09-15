@@ -1,4 +1,5 @@
 #include "veyra/engine/EnhancementSettings.h"
+#include "veyra/engine/BackendRecovery.h"
 #include "veyra/diagnostics/DiagnosticEvent.h"
 #include "veyra/diagnostics/FrameMetrics.h"
 #include "veyra/diagnostics/ResetCause.h"
@@ -19,9 +20,36 @@
 #include "veyra/sink/AudioFrameTimeline.h"
 #include "veyra/sink/ArrivalClockMapping.h"
 #include "veyra/sink/CaptureSyncTarget.h"
+#include "veyra/source/DolbyVision.h"
 int main(){
     using namespace veyra;int failures=0,checks=0;
     auto check=[&](bool ok,const char* name){++checks;if(!ok)++failures;std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n';};
+    {
+        engine::EnhancementSettings requested;requested.nr=requested.sr=true;requested.multiplier=2;requested.audioOffsetMs=37;
+        auto recovered=requested;
+        check(engine::disableFailedBackend(recovered,engine::FailedBackend::Fg)&&recovered.nr&&recovered.sr&&recovered.multiplier==1&&recovered.audioOffsetMs==37,"FG failure preserves NR, SR and independent audio settings");
+        recovered=requested;recovered.frameGenerationBackend=engine::FrameGenerationBackend::XeSS;
+        check(engine::disableFailedBackend(recovered,engine::FailedBackend::NgxCore)&&!recovered.nr&&!recovered.sr&&recovered.multiplier==2,"NGX failure does not disable independent XeSS backend");
+        check(!engine::disableFailedBackend(recovered,engine::FailedBackend::Infrastructure),"device and color failures cannot silently degrade into success");
+        recovered=requested;recovered.videoSrQuality=2;
+        check(engine::disableFailedBackend(recovered,engine::FailedBackend::OpticalFlow)&&!recovered.nr&&recovered.sr&&recovered.multiplier==1,"flow failure disables dependent consumers while retaining spatial video SR");
+        check(!engine::disableFailedBackend(recovered,engine::FailedBackend::OpticalFlow),"repeated failure cannot create an unbounded recovery loop");
+        source::DolbyVisionInfo dv;dv.present=dv.baseLayer=true;dv.profile=5;dv.compatibility=1;
+        check(dv.route()==source::DolbyBaseLayer::Unsupported,"DV P5 cannot be relabelled as HDR10 even with a conflicting compatibility id");
+        dv.profile=8;
+        check(dv.route()==source::DolbyBaseLayer::Hdr10,"DV P8.1 selects HDR10 base-layer compatibility");
+        pipeline::ColorDescription color;color.transfer=pipeline::TransferFunction::PQ;color.matrix=pipeline::YuvMatrix::BT2020NCL;color.primaries=pipeline::ColorPrimaries::BT2020;
+        check(dv.matches(color),"DV HDR10 route requires matching decoded color contract");
+        color.transfer=pipeline::TransferFunction::SRGB;check(!dv.matches(color),"DV declaration cannot force SDR pixels into PQ");
+        dv.compatibility=4;check(dv.route()==source::DolbyBaseLayer::Hlg,"DV P8.4 selects HLG base layer");
+        dv.compatibility=2;check(dv.route()==source::DolbyBaseLayer::Sdr,"DV P8.2 selects SDR base layer");
+        dv.baseLayer=false;check(dv.route()==source::DolbyBaseLayer::Unsupported,"missing DV base layer fails closed");
+        diagnostics::GpuFrameTiming gpu;auto& first=gpu.gpu[size_t(diagnostics::GpuStage::Color)];first={diagnostics::SampleState::Measured,2,1000,3000,1000000};
+        auto& last=gpu.gpu[size_t(diagnostics::GpuStage::FgBatch)];last={diagnostics::SampleState::Measured,3,10000,13000,1000000};
+        gpu.gpu[size_t(diagnostics::GpuStage::Blit)]={diagnostics::SampleState::Measured,2,100000,102000,1000000};
+        check(diagnostics::graphExecutionSpanMs(gpu)==12,"GPU budget excludes delayed presentation and CPU completion observation");
+        last.frequency=1000;check(!diagnostics::graphExecutionSpanMs(gpu),"unrelated GPU clocks cannot form a processing envelope");
+    }
     const auto logPath=std::filesystem::temp_directory_path()/(L"veyra-log-reopen-"+std::to_wstring(GetCurrentProcessId())+L".log");
     {
         auto logger=std::make_unique<Logger>();logger->setConsoleEnabled(false);

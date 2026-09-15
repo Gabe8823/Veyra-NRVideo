@@ -115,7 +115,7 @@ struct EnhancementSettings {
         if(!pipeline::validSrTarget(srTarget))return "invalid SR target";
         if(opticalFlowBackend!=OpticalFlowBackend::Nvidia&&opticalFlowBackend!=OpticalFlowBackend::AmdFidelityFx&&opticalFlowBackend!=OpticalFlowBackend::GpuDis)return "invalid optical flow backend";
         if(multiplier<1||multiplier>4)return "unsupported multiplier";
-        if(nrPolicy!=pipeline::NrSizePolicy::Realtime&&nrPolicy!=pipeline::NrSizePolicy::Native)return "invalid NR size policy";
+        if(!pipeline::validNrSizePolicy(nrPolicy))return "invalid NR size policy";
         if(flow<FlowQuality::Performance||flow>FlowQuality::Quality||content<ContentRate::Transport||content>ContentRate::Capture60To30)return "invalid flow/content mode";
         return {};
     }

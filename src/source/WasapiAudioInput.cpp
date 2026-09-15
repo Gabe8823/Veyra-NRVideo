@@ -124,14 +124,15 @@ struct WasapiAudioInput::Impl {
     void run(){
         ComScope apartment;
         if(!checked(apartment.hr,"capture thread COM")){std::lock_guard lock(mutex);error=L"WASAPI 输入线程初始化失败";return;}
-        for(unsigned attempt=0;attempt<4&&!stopping;++attempt){
+        for(uint64_t attempt=0;!stopping;++attempt){
             if(attempt){std::lock_guard lock(mutex);++metrics.retries;}
             const HRESULT hr=stream();
             {std::lock_guard lock(mutex);if(session)session->stop();session.reset();
-                if(FAILED(hr))error=std::format(L"WASAPI 输入失败 0x{:08X}；{}",uint32_t(hr),attempt<3?L"仅重试所选设备，视频继续":L"重试已用尽，请重新连接");}
+                if(FAILED(hr))error=std::format(L"WASAPI 输入失败 0x{:08X}；等待原设备重新连接，视频继续",uint32_t(hr));}
             if(SUCCEEDED(hr)||stopping)break;
-            log::warn("wasapi-input",std::format("input attempt={} failed hr=0x{:08X} retriesRemaining={} defaultFallback=0",attempt+1,uint32_t(hr),3-attempt));
-            if(attempt<3&&WaitForSingleObject(stopEvent.value,1000)==WAIT_OBJECT_0)break;
+            const DWORD backoff=DWORD(std::min<uint64_t>(attempt+1,5)*1000);
+            log::warn("wasapi-input",std::format("input attempt={} failed hr=0x{:08X} retryInMs={} defaultFallback=0",attempt+1,uint32_t(hr),backoff));
+            if(WaitForSingleObject(stopEvent.value,backoff)==WAIT_OBJECT_0)break;
         }
     }
 };

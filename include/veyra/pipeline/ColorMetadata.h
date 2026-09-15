@@ -44,6 +44,10 @@ inline ColorDescription resolveFrameColor(const AVFrame& frame,ColorDescription 
     case AVCOL_PRI_BT2020:c.primaries=ColorPrimaries::BT2020;c.primariesAssumed=false;break;
     default:break;
     }
+    if(c.primaries==ColorPrimaries::Unknown||c.primariesAssumed){
+        c.primaries=c.matrix==YuvMatrix::BT2020NCL||c.matrix==YuvMatrix::BT2020CL?ColorPrimaries::BT2020:ColorPrimaries::BT709;
+        c.primariesAssumed=true;
+    }
     switch(frame.color_trc){
     case AVCOL_TRC_SMPTE2084:c.transfer=TransferFunction::PQ;c.transferAssumed=false;break;
     case AVCOL_TRC_ARIB_STD_B67:c.transfer=TransferFunction::HLG;c.transferAssumed=false;break;
@@ -60,7 +64,15 @@ inline ColorDescription resolveFrameColor(const AVFrame& frame,ColorDescription 
     if(c.transfer==TransferFunction::Unknown){c.transfer=rgb?TransferFunction::SRGB:TransferFunction::BT709;c.transferAssumed=true;}
     return c;
 }
-inline uint32_t transferCode(TransferFunction t){return t==TransferFunction::Linear?0u:t==TransferFunction::BT709?2u:1u;}
-inline uint32_t workingTransferCode(const ColorDescription& c){return c.displayReferred709&&c.transfer==TransferFunction::BT709?3u:transferCode(c.transfer);}
+// BT.2020 10/12-bit SDR uses the BT.709-compatible OETF. Keep it distinct in
+// metadata, but feed the same shader transfer branch rather than sRGB.
+inline uint32_t transferCode(TransferFunction t){return t==TransferFunction::Linear?0u:(t==TransferFunction::BT709||t==TransferFunction::BT2020_10)?2u:1u;}
+inline uint32_t workingTransferCode(const ColorDescription& c){
+    // Our SDR sink encodes sRGB. Decode that same curve for ordinary desktop
+    // BT.709 playback, preserving code values through the no-effects graph.
+    // A camera inverse OETF lifts midtones; BT.1886 -> sRGB darkens them.
+    if(c.preserveSdrCodeValues&&c.transfer==TransferFunction::BT709)return 1u;
+    return c.displayReferred709&&c.transfer==TransferFunction::BT709?3u:transferCode(c.transfer);
+}
 
 }

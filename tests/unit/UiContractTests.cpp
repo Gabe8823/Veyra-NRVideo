@@ -3,6 +3,8 @@
 #include "../../apps/veyra/ui/WorkspaceTransition.h"
 #include "../../apps/veyra/ui/TransportLayout.h"
 #include "../../apps/veyra/ui/UiPreferenceStore.h"
+#include "../../apps/veyra/ui/CapturePreferenceStore.h"
+#include "veyra/engine/EngineController.h"
 #include "veyra/sink/AudioGain.h"
 #include "veyra/engine/PreviewView.h"
 #include <iostream>
@@ -26,6 +28,21 @@ int wmain(int argc,wchar_t** argv){try{
     for(int width:{290,400,480,508,700,1000}){ui::TransportLayout t(width,false);require(t.play.x+t.play.width<=t.mute.x&&t.stop.x+t.stop.width<=t.mute.x,"compact professional transport leaves room for audio and subtitle controls");}
     ui::WorkspaceTransition animation;animation.start(true,1000);animation.sample(1120);const auto halfway=animation.value;require(halfway>.49&&halfway<.51,"visible intermediate expansion");animation.start(false,1120);require(animation.value==halfway,"reverse without jump");animation.sample(1240);require(animation.value>0&&animation.value<halfway,"panel collapses progressively");animation.sample(1360);require(!animation.running&&animation.value==0,"collapse ends exactly");
     using pipeline::ResolutionPlan;using pipeline::NrSizePolicy;using pipeline::Extent;
+    for(auto policy:{NrSizePolicy::P480,NrSizePolicy::P720,NrSizePolicy::P900,NrSizePolicy::Realtime,NrSizePolicy::P1440}){
+        engine::EnhancementSettings s;s.nrPolicy=policy;
+        require(s.validate().empty()&&engine::PlayerOptions::from(s).snapshot().nrPolicy==policy,"NR policy survives controller round trip");
+        const auto p=ResolutionPlan::make({3840,2160},false,policy,false);
+        require(p.nr.height==pipeline::nrHeightLimit(policy)&&p.output==Extent{3840,2160}&&p.flow==p.nr,"NR tier reduces internal work only");
+        require(ResolutionPlan::make({3840,2160},false,policy,true).nr==Extent{3840,2160},"all export policies retain full extent");
+        require(ResolutionPlan::make({320,180},false,policy,false).nr==Extent{320,180},"NR tier never upscales smaller source");
+        auto portrait=ResolutionPlan::make({1080,1920},false,policy,false).nr;
+        require(std::abs(double(portrait.width)/portrait.height-1080.0/1920)<.005,"NR portrait aspect retained");
+    }
+    if(argc>1){
+        ui::CapturePreferenceStore store(argv[1]);ui::CapturePreferences p{L"\\\\?\\usb#video-\u91c7\u96c6",L"1920:1080:166833:{SUBTYPE}:RGB32",L"{audio-endpoint}",-3,2};
+        require(store.load().videoPath.empty(),"fresh capture preference empty");require(store.save(p),"capture preference atomic save");
+        const auto restored=store.load();require(restored.videoPath==p.videoPath&&restored.formatKey==p.formatKey&&restored.audioPath==p.audioPath&&restored.audioMode==p.audioMode&&restored.colorOverride==p.colorOverride,"capture stable identifiers and Unicode round trip");
+    }
     require(ResolutionPlan::make({1448,1086},true,NrSizePolicy::Native,true).output==Extent{2880,2160},"4:3 SR preserves aspect");
     require(ResolutionPlan::make({1080,1920},true,NrSizePolicy::Native,true).output==Extent{1214,2160},"portrait SR even dimensions");
     require(!ResolutionPlan::make({2880,2160},true,NrSizePolicy::Native,true).srApplied,"already maximum edge skips SR");

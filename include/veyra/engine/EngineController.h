@@ -20,8 +20,8 @@ class FrameFlowWindow;
 struct PlayerOptions { bool nr=false,sr=false,fg=false,realtime=true; uint32_t fgMultiplier=2; EnhancementSettings settings;
     bool captureReplayForTest=false; // file-backed live scheduler test; never enabled by UI
     bool captureReplayDisableFgAdmissionForTest=false; // controlled scheduler A/B only
-    EnhancementSettings snapshot()const{auto s=settings;s.nr=nr;s.sr=sr;s.multiplier=fg?fgMultiplier:1;s.nrPolicy=realtime?pipeline::NrSizePolicy::Realtime:pipeline::NrSizePolicy::Native;return s;}
-    static PlayerOptions from(EnhancementSettings s){PlayerOptions o;o.nr=s.nr;o.sr=s.sr;o.fg=s.multiplier>1;o.fgMultiplier=std::max(2u,s.multiplier);o.realtime=s.nrPolicy==pipeline::NrSizePolicy::Realtime;o.settings=s;return o;}
+    EnhancementSettings snapshot()const{auto s=settings;s.nr=nr;s.sr=sr;s.multiplier=fg?fgMultiplier:1;s.nrPolicy=realtime?(settings.nrPolicy==pipeline::NrSizePolicy::Native?pipeline::NrSizePolicy::Realtime:settings.nrPolicy):pipeline::NrSizePolicy::Native;return s;}
+    static PlayerOptions from(EnhancementSettings s){PlayerOptions o;o.nr=s.nr;o.sr=s.sr;o.fg=s.multiplier>1;o.fgMultiplier=std::max(2u,s.multiplier);o.realtime=s.nrPolicy!=pipeline::NrSizePolicy::Native;o.settings=s;return o;}
 };
 enum class TransportState { Empty, Opening, Playing, Paused, Ended, Stopping, Failed };
 struct PlayerSnapshot {
@@ -31,6 +31,7 @@ struct PlayerSnapshot {
     EnhancementSettings desired,applied;bool applying=false;
     bool nrActive=false,srActive=false,fgActive=false;
     std::wstring backendWarning;
+    std::wstring sourceNotice;
     std::wstring colorStatus;
     sink::CaptureAudioState captureAudio;
     unsigned audioInputChannels=0,audioOutputChannels=0;
@@ -47,6 +48,7 @@ struct PlayerSnapshot {
     uint64_t captureReceived=0,captureDropped=0,nrEvaluated=0,nvofExecuted=0;
     uint64_t captureRateSkipped=0,processedCompleted=0;
     bool captureHalfRate=false;
+    bool captureRecovering=false;unsigned captureReconnectAttempts=0;
     double captureFps=0,captureReadAgeMs=0,captureAgeMs=0,captureAgeP95Ms=0;
     double schedulingWaitP95Ms=0,processCpuP95Ms=0,presentCpuP95Ms=0;
     // Realtime file preview: dropped enhancement opportunities this metrics

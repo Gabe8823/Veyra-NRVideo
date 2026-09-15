@@ -2,6 +2,7 @@
 #include "veyra/pipeline/ColorMetadata.h"
 
 #include <climits>
+#include <cstddef>
 #include <cmath>
 #include <format>
 #include <string_view>
@@ -11,6 +12,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/dovi_meta.h>
 }
 
 namespace veyra::source {
@@ -102,9 +104,13 @@ pipeline::ColorDescription MediaFileSource::parseColor(const AVCodecParameters* 
     }
 
     if (cd.primaries == pipeline::ColorPrimaries::Unknown) {
-        cd.primaries = pipeline::ColorPrimaries::BT709;
+        cd.primaries = cd.matrix==pipeline::YuvMatrix::BT2020NCL||cd.matrix==pipeline::YuvMatrix::BT2020CL?pipeline::ColorPrimaries::BT2020:pipeline::ColorPrimaries::BT709;
         cd.primariesAssumed = true;
     }
+    // Standard desktop SDR playback retains RGB signal levels after range
+    // expansion and YUV matrix conversion. Match the working decode to the
+    // sink encode; don't apply a reference-monitor gamma adjustment here.
+    cd.preserveSdrCodeValues = true;
     AVFrame metadata{};metadata.format=params->format;metadata.height=info_.height;metadata.color_range=params->color_range;metadata.colorspace=params->color_space;metadata.color_trc=params->color_trc;
     return pipeline::resolveFrameColor(metadata,cd);
 }
@@ -167,6 +173,17 @@ bool MediaFileSource::open(const SourceOpenDesc& desc)
     info_.videoPixelFormatName = params->format >= 0 && av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format))
         ? av_get_pix_fmt_name(static_cast<AVPixelFormat>(params->format)) : "unknown";
     info_.color = parseColor(params);
+    if(const auto* side=av_packet_side_data_get(params->coded_side_data,params->nb_coded_side_data,AV_PKT_DATA_DOVI_CONF)){
+        if(side->size<offsetof(AVDOVIDecoderConfigurationRecord,dv_bl_signal_compatibility_id)+sizeof(uint8_t)){
+            errorMessage_=L"Dolby Vision 配置信息不完整";return false;
+        }
+        const auto& config=*reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(side->data);
+        auto& dv=info_.dolbyVision;dv.present=true;dv.profile=config.dv_profile;dv.level=config.dv_level;
+        dv.baseLayer=config.bl_present_flag!=0;dv.enhancementLayer=config.el_present_flag!=0;
+        dv.rpuDeclared=config.rpu_present_flag!=0;dv.compatibility=config.dv_bl_signal_compatibility_id;
+        log::info("source-dovi",std::format("profile={} level={} compatibility={} bl={} el={} rpuDeclared={} route={} nativeOutput=0 rpuApplied=0",dv.profile,dv.level,dv.compatibility,dv.baseLayer,dv.enhancementLayer,dv.rpuDeclared,int(dv.route())));
+        if(dv.route()==DolbyBaseLayer::Unsupported){errorMessage_=dv.description();return false;}
+    }
 
     sequence_ = 0;
     framesRead_ = 0;
@@ -274,6 +291,17 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
     }
     out.sourceKind = pipeline::SourceKind::File;
     out.colorInfo = pipeline::resolveFrameColor(*frame,info_.color);
+    auto& dv=info_.dolbyVision;
+    const bool hasRpu=av_frame_get_side_data(frame,AV_FRAME_DATA_DOVI_METADATA)||av_frame_get_side_data(frame,AV_FRAME_DATA_DOVI_RPU_BUFFER);
+    if(hasRpu&&!dv.present){
+        errorMessage_=L"检测到 Dolby Vision RPU，但缺少基础层兼容声明，无法确认颜色，已停止";
+        return SourceReadStatus::Error;
+    }
+    if(hasRpu&&!dv.rpuObserved){dv.rpuObserved=true;log::info("source-dovi","decoded RPU observed; compatibility playback does not apply dynamic metadata");}
+    if(!dv.matches(out.colorInfo)){
+        errorMessage_=L"Dolby Vision 基础层颜色与兼容声明不匹配，已停止以避免错误颜色";
+        return SourceReadStatus::Error;
+    }
     // D3D12VA frames expose the underlying surface through AV_PIX_FMT_D3D12,
     // so resolveFrameColor cannot infer NV12/P010 from frame->format. HDR
     // hardware surfaces are P010 by contract; SDR surfaces are NV12. Software

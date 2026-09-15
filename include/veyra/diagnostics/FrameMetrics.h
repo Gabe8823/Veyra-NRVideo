@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <optional>
 #include "veyra/pipeline/FrameBatch.h"
@@ -13,6 +14,19 @@ enum class ResetOutcome { InProgress, Completed, Failed, RolledBack, Cancelled }
 struct TimingAggregate {std::optional<double> mean,p95;uint64_t samples=0;};
 struct GpuSample {SampleState state=SampleState::NotExecuted;std::optional<double> milliseconds;uint64_t begin=0,end=0,frequency=0;};
 struct GpuFrameTiming {pipeline::FrameIdentity identity;std::array<GpuSample,size_t(GpuStage::Count)> gpu{};};
+// All graph stage timestamps use the direct queue's clock. The envelope
+// includes its dependency waits but excludes a late CPU completion poll.
+inline std::optional<double> graphExecutionSpanMs(const GpuFrameTiming& frame){
+    uint64_t begin=UINT64_MAX,end=0,frequency=0;
+    for(size_t i=0;i<size_t(GpuStage::Blit);++i){
+        const auto& s=frame.gpu[i];
+        if(s.state!=SampleState::Measured)continue;
+        if(!s.frequency||s.end<s.begin||(frequency&&frequency!=s.frequency))return {};
+        frequency=s.frequency;begin=std::min(begin,s.begin);end=std::max(end,s.end);
+    }
+    if(!frequency||begin==UINT64_MAX||end<begin)return {};
+    return double(end-begin)*1000/frequency;
+}
 // Live presentation is asynchronous. Keep the identity of the window that
 // owns these counters so a finished job from a prior reset cannot be reported
 // as work performed by the current settings or temporal epoch.

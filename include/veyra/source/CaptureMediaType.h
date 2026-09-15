@@ -76,6 +76,7 @@ inline bool captureMediaLayout(const AM_MEDIA_TYPE& type,CaptureMediaLayout& out
     // Preserve those code values through the sRGB working round trip, like
     // the old RGB ingress, instead of applying a camera OETF a second time.
     out.color.transfer=pipeline::TransferFunction::SRGB;out.color.transferAssumed=true;
+    out.color.preserveSdrCodeValues=true;
     if(flags&AMCONTROL_COLORINFO_PRESENT){
         DXVA2_ExtendedFormat ext{};ext.value=flags;
         if(ext.NominalRange==DXVA2_NominalRange_0_255){out.color.range=pipeline::ColorRange::Full;out.color.rangeAssumed=false;}
@@ -90,6 +91,7 @@ inline bool captureMediaLayout(const AM_MEDIA_TYPE& type,CaptureMediaLayout& out
         if(ext.VideoPrimaries==9){out.color.primaries=pipeline::ColorPrimaries::BT2020;out.color.primariesAssumed=false;}
         if(ext.VideoTransferFunction==DXVA2_VideoTransFunc_10){out.color.transfer=pipeline::TransferFunction::Linear;out.color.transferAssumed=false;}
         else if(ext.VideoTransferFunction==DXVA2_VideoTransFunc_sRGB){out.color.transferAssumed=false;}
+        else if(ext.VideoTransferFunction==DXVA2_VideoTransFunc_709){out.color.transfer=pipeline::TransferFunction::BT709;out.color.transferAssumed=false;}
         else if(ext.VideoTransferFunction==15||ext.VideoTransferFunction==16){out.color.transfer=ext.VideoTransferFunction==15?pipeline::TransferFunction::PQ:pipeline::TransferFunction::HLG;out.color.transferAssumed=false;}
         else if(ext.VideoTransferFunction!=DXVA2_VideoTransFunc_Unknown&&ext.VideoTransferFunction!=DXVA2_VideoTransFunc_709&&ext.VideoTransferFunction!=DXVA2_VideoTransFunc_22)return false;
     }
@@ -121,6 +123,7 @@ inline bool equivalentCaptureTypes(const AM_MEDIA_TYPE& a,const AM_MEDIA_TYPE& b
     CaptureMediaLayout x,y;if(!captureMediaLayout(a,x)||!captureMediaLayout(b,y))return false;
     return x.packing==y.packing&&x.format==y.format&&x.width==y.width&&x.height==y.height&&x.stride==y.stride&&x.bottomUp==y.bottomUp&&x.duration==y.duration&&
         x.color.range==y.color.range&&x.color.matrix==y.color.matrix&&x.color.transfer==y.color.transfer&&
+        x.color.primaries==y.color.primaries&&x.color.displayReferred709==y.color.displayReferred709&&x.color.preserveSdrCodeValues==y.color.preserveSdrCodeValues&&
         x.color.rangeAssumed==y.color.rangeAssumed&&x.color.matrixAssumed==y.color.matrixAssumed&&x.color.transferAssumed==y.color.transferAssumed;
 }
 }

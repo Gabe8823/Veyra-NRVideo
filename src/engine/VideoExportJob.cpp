@@ -42,8 +42,8 @@ bool exportVideo(const std::wstring& input,const std::wstring& output,PlayerOpti
             veyra::log::warn("export","export rejected: selected adapter has no NVIDIA NVENC; AMD AMF and Intel encoder backends are not implemented");
             break;
         }
-        source::SourceOpenDesc od;od.path=input;od.preferHardwareDecode=false;if(!source.open(od))break;
-        const auto info=source.info();if(!pipeline::Extent{info.width,info.height}.valid()){progress(0,L"输入尺寸超出GPU单纹理能力");break;}
+        source::SourceOpenDesc od;od.path=input;od.preferHardwareDecode=false;if(!source.open(od)){failureReason=source.errorMessage();break;}
+        auto info=source.info();if(!pipeline::Extent{info.width,info.height}.valid()){progress(0,L"输入尺寸超出GPU单纹理能力");break;}
         // Bounded metadata scan; decoded pixels are not retained. Rewind the
         // file source afterwards, preserving all source frames for the export.
         std::vector<double> samples;bool scanError=false;
@@ -53,11 +53,18 @@ bool exportVideo(const std::wstring& input,const std::wstring& output,PlayerOpti
         CfrTimeline timeline(rateNum,rateDen,info.timestampQuantum,samples.front());
         if(!timeline.valid()){progress(0,L"无法确认一致的恒定帧率，已停止导出");veyra::log::error("export-timeline","CFR rejected source=preflight; no timestamp-consistent rate candidate");break;}
         source.close();if(!source.open(od))break; // reopen from the true beginning, including negative PTS
+        // The first decoded frame is authoritative when container headers omit
+        // transfer/range metadata. Do not build an SDR graph from stale header
+        // defaults after the preflight discovered HDR/BT.2020 pixels.
+        pipeline::FramePacket firstPacket;const AVFrame* firstFrame=nullptr;
+        if(source.read(firstPacket,&firstFrame)!=source::SourceReadStatus::Frame||!firstFrame){failureReason=L"导出预读首帧失败";break;}
+        info=source.info(); // retain this frame for the export, without decoding it again
         const AVRational rate=av_mul_q({rateNum,rateDen},{int(options.fg?options.fgMultiplier:1),1});
         outputRate=rate;
         veyra::log::info("export-timeline",std::format("CFR declared={}/{} candidate={}/{} timestampQuantum={} sampled={} output={}/{} (timestamp-consistent candidate, quantized short clips may be ambiguous; every PTS validated)",info.nominalRateNum,info.nominalRateDen,rateNum,rateDen,info.timestampQuantum,samples.size(),rate.num,rate.den));
         const auto resolution=pipeline::ResolutionPlan::make({info.width,info.height},options.sr,pipeline::NrSizePolicy::Native,true,options.settings.revision,options.settings.srTarget);
         pipeline::EnhanceGraphDesc gd;gd.hdrInput=gd.hdrOutput=info.color.isHdrPath();hdrExport=gd.hdrOutput;
+        gd.captureBitDepth=info.color.pixelFormat==pipeline::SourcePixelFormat::P010?10:info.color.pixelFormat==pipeline::SourcePixelFormat::P016?16:8;
         if(gd.hdrOutput&&!hevc){failureReason=L"HDR视频请使用HEVC Main10导出（选择HEVC）";break;}
         gd.sourceWidth=info.width;gd.sourceHeight=info.height;gd.workWidth=resolution.base.width;gd.workHeight=resolution.base.height;gd.nrWidth=resolution.nr.width;gd.nrHeight=resolution.nr.height;gd.flowWidth=resolution.flow.width;gd.flowHeight=resolution.flow.height;gd.enableSr=resolution.srApplied;gd.videoSrQuality=options.settings.videoSrQuality;gd.enableNr=options.nr;gd.nrRuntime=options.settings.nrRuntime;gd.enableFg=options.fg;gd.fgMultiplier=options.fgMultiplier;gd.frameGenerationBackend=options.settings.frameGenerationBackend;gd.enableNvofStandalone=options.nr;gd.model=options.settings.model;gd.residual=options.settings.residual;gd.protection=options.settings.protection;gd.settingsRevision=options.settings.revision;gd.flowQuality=options.settings.flow;gd.opticalFlowBackend=options.settings.opticalFlowBackend;gd.amdFlowHalfResolution=options.settings.amdFlowHalfResolution;gd.contentRate=options.settings.content;gd.runtimeAbsPath=runtime::localRuntimeDirectory().wstring();
         if(!graph.initialize(gd)||!graph.createViews())break;
@@ -92,7 +99,11 @@ bool exportVideo(const std::wstring& input,const std::wstring& output,PlayerOpti
         auto headers=enc.headers();cp->extradata=static_cast<uint8_t*>(av_mallocz(headers.size()+AV_INPUT_BUFFER_PADDING_SIZE));if(!cp->extradata)break;memcpy(cp->extradata,headers.data(),headers.size());cp->extradata_size=int(headers.size());
         if(avio_open(&mux->pb,utf8(partial).c_str(),AVIO_FLAG_WRITE)<0||avformat_write_header(mux,nullptr)<0)break;headerWritten=true;
         uint64_t sourceCount=0,generatedCount=0,holdCount=0;int64_t outputIndex=0;bool error=false;std::shared_ptr<pipeline::FrameLease> lastReal;
-        while(!cancel){if(frameBoundary&&!frameBoundary()){error=true;break;}pipeline::FramePacket packet;const AVFrame* frame=nullptr;const auto rs=source.read(packet,&frame);if(rs==source::SourceReadStatus::Eos)break;if(rs!=source::SourceReadStatus::Frame||packet.pts.isUnknown()){failureReason=source.errorMessage();error=true;break;}
+        while(!cancel){if(frameBoundary&&!frameBoundary()){error=true;break;}pipeline::FramePacket packet;const AVFrame* frame=nullptr;
+            source::SourceReadStatus rs;
+            if(sourceCount==0){packet=firstPacket;frame=firstFrame;rs=source::SourceReadStatus::Frame;}
+            else rs=source.read(packet,&frame);
+            if(rs==source::SourceReadStatus::Eos)break;if(rs!=source::SourceReadStatus::Frame||packet.pts.isUnknown()){failureReason=source.errorMessage();error=true;break;}
             if(sourceCount==0)videoOriginSeconds=packet.pts.toDouble();
             const double expectedPts=timeline.expected(sourceCount);
             if(!timeline.accepts(sourceCount,packet.pts.toDouble())){

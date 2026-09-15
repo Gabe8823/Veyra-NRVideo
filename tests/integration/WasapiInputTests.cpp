@@ -19,9 +19,11 @@ int wmain(int argc,wchar_t** argv){
         if(injected)SetEnvironmentVariableW(L"VEYRA_TEST_WASAPI_INPUT_LOSS",nullptr);
         check(input.start(),"explicit same endpoint restart");std::this_thread::sleep_for(std::chrono::seconds(1));check(input.snapshot().inputBlocks>10,"restart delivers packets");input.stop();
     }else if(argc==2&&wcscmp(argv[1],L"--invalid")==0){
-        WasapiAudioInput input;input.configure(L"veyra-invalid-endpoint-no-fallback");input.setGain(0);check(input.start(),"invalid endpoint begins bounded attempts");
-        std::this_thread::sleep_for(std::chrono::seconds(5));auto state=input.snapshot();check(!state.error.empty()&&!state.running&&state.inputBlocks==0,"invalid ID never falls back to microphone");input.stop();
-        check(input.metrics().retries==3,"failed input retries are bounded to three");
+        WasapiAudioInput input;input.configure(L"veyra-invalid-endpoint-no-fallback");input.setGain(0);check(input.start(),"invalid endpoint begins paced retries");
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(13);
+        while(input.metrics().retries<4&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto state=input.snapshot();check(!state.error.empty()&&!state.running&&state.inputBlocks==0,"invalid ID never falls back to microphone");input.stop();
+        check(input.metrics().retries>=4&&input.metrics().retries<=5,"selected endpoint keeps retrying beyond old limit with bounded backoff");
         check(input.start(),"invalid endpoint can explicitly restart");std::this_thread::sleep_for(std::chrono::milliseconds(200));
         const auto before=std::chrono::steady_clock::now();input.stop();check(std::chrono::steady_clock::now()-before<std::chrono::milliseconds(500),"stop interrupts reconnect backoff");
     }else if(argc==2&&wcscmp(argv[1],L"--offline")==0){
