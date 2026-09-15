@@ -26,6 +26,13 @@ int wmain(int argc,wchar_t** argv){
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     check(!source.info().opened&&source.metrics().received==0,"configure does not start capture/audio");
     if(!source.start()){printf("FAIL start\n");return 4;}
+    // Keep the physical regression silent while still exercising the real
+    // capture-card audio renderer and its format negotiation.
+    source.setAudioGain(0.0f);
+    // This source-only test has no presenter to provide video host/PTS
+    // anchors. Use the explicit audio-clock mode so the renderer remains
+    // running while the test validates actual audio callbacks.
+    source.setAudioSync(2,0);
     const AVFrame* frame=nullptr;veyra::pipeline::FramePacket packet;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     auto readFrame=[&](){while(std::chrono::steady_clock::now()<deadline){auto r=source.read(packet,&frame);if(r==veyra::source::SourceReadStatus::Frame)return true;if(r==veyra::source::SourceReadStatus::Error)return false;}return false;};
@@ -41,9 +48,15 @@ int wmain(int argc,wchar_t** argv){
     deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
     check(readFrame(),"read after consumer stall");
     auto recovered=source.metrics();
+    const auto audio=source.audioState();
+    check(audio.running&&audio.error.empty()&&audio.inputSampleRate==48000&&audio.inputBlocks>=20,
+        "real capture-card audio renderer runs at selected 48 kHz format");
     check(packet.pts.toDouble()>initialPts+.15,"read skips stale frames rather than draining FIFO");
     check(veyra::pipeline::hasFrameFlag(packet.flags,veyra::pipeline::FrameFlagBits::Drop),"drop invalidates temporal history");
     check(recovered.readAgeMs<100,"latest frame callback age below 100ms");
     printf("received=%llu dropped=%llu callbackFps=%.3f readAgeMs=%.3f\n",recovered.received,recovered.dropped,recovered.callbackFps,recovered.readAgeMs);
+    printf("audioBlocks=%llu format=%uHz/%ubit validBits=%u underruns=%llu underrunFrames=%llu peak=%.5f resets=%llu\n",
+        audio.inputBlocks,audio.inputSampleRate,audio.inputContainerBits,audio.inputValidBits,audio.underruns,
+        audio.underrunFrames,audio.inputPeak,audio.resets);
     source.close();CoUninitialize();return failures?1:0;
 }

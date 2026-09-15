@@ -315,11 +315,14 @@ bool AudioRenderer::copyPcm(BYTE* destination,const float* input,size_t frames){
     std::memcpy(destination,mixed_.data(),frames*outputFormat_.channels*sizeof(float));return true;
 }
 
-bool AudioRenderer::start(AudioFormat input)
+bool AudioRenderer::start(AudioFormat input,double requestedBufferMs)
 {
     std::lock_guard endpointLock(endpointMutex_);
     if(client_||enum_)return checked(E_UNEXPECTED,"Endpoint already initialized");
-    lastError_=S_OK;bufferedMs_=0;smoothedGain_=0;
+    lastError_=S_OK;bufferedMs_=0;smoothedGain_=0;fadeInRemaining_=0;underruns_=0;underrunFrames_=0;silenceFrames_=0;
+    liveGap_.reset();
+    emptyPulls_=0;recoveryFades_=0;
+    clockStalledGaps_=0;
     if(!input.valid())return checked(E_INVALIDARG,"Invalid input channel layout");
     inputFormat_=input;lastRaw_.assign(input.channels,0);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -349,12 +352,17 @@ bool AudioRenderer::start(AudioFormat input)
     }
     log::info("audio-format",std::format("input={} mask=0x{:X} output={} mask=0x{:X} downmix={} deviceLayoutKnown={}",input.channels,input.mask,outputFormat_.channels,outputFormat_.mask,outputFormat_.channels<input.channels,known));
     sampleRate_ = kAudioRate;
+    requestedBufferMs=std::clamp(requestedBufferMs,5.0,50.0);
+    const REFERENCE_TIME requestedBufferHns=static_cast<REFERENCE_TIME>(std::llround(requestedBufferMs*10000.0));
     hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
         AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        10 * 10000, 0, &mix.Format, nullptr);
+        requestedBufferHns, 0, &mix.Format, nullptr);
     const bool initOk = checked(hr,"Initialize AudioClient");
     if (!initOk) return false;
     if (!checked(client_->GetBufferSize(&bufferFrames_),"GetBufferSize")) return false;
+    REFERENCE_TIME devicePeriod=0;
+    if(!checked(client_->GetDevicePeriod(&devicePeriod,nullptr),"GetDevicePeriod"))return false;
+    devicePeriodMs_=std::max(.1,double(devicePeriod)/10000.0);
     event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if(event_==nullptr)return checked(HRESULT_FROM_WIN32(GetLastError()),"CreateEvent");
     if(!checked(client_->SetEventHandle(event_),"SetEventHandle"))return false;
@@ -367,8 +375,8 @@ bool AudioRenderer::start(AudioFormat input)
     if(!freq)return checked(E_UNEXPECTED,"Zero audio clock frequency");
     clockFrequency_=freq;
     running_ = true;
-    veyra::log::info("audio", std::format("renderer opened {}Hz event-mode buffer={} frames (not started; prefill first)",
-        sampleRate_, bufferFrames_));
+    veyra::log::info("audio", std::format("renderer opened {}Hz event-mode requestedBufferMs={:.1f} actualBufferMs={:.3f} buffer={} frames (not started; prefill first)",
+        sampleRate_,requestedBufferMs,1000.0*bufferFrames_/sampleRate_,bufferFrames_));
     return true;
 }
 
@@ -411,7 +419,12 @@ bool AudioRenderer::pumpOnce(AudioPcmSource& pipeline, double* firstWrittenPtsMs
     if(started_&&!padding&&!pipeline.padUnderruns()){
         UINT64 pos=0,qpc=0;
         if(!checked(clock_->GetPosition(&pos,&qpc),"Live write GetPosition"))return false;
-        const auto consumed=static_cast<uint64_t>(std::ceil(double(pos-anchorPos_)*sampleRate_/clockFrequency_));
+        const auto consumed=static_cast<uint64_t>(double(pos-anchorPos_)*sampleRate_/clockFrequency_);
+        const auto gap=liveGap_.observe(padding,consumed,timelineWriteFrame_.load());
+        if(gap.frames){
+            underrunFrames_.fetch_add(gap.frames);
+            if(gap.began){underruns_.fetch_add(1);fadeInRemaining_=240;recoveryFades_.fetch_add(1);}
+        }
         timelineWriteFrame_=std::max(timelineWriteFrame_.load(),consumed);
     }
     if(pipeline.pcmFormat()!=inputFormat_)return checked(E_INVALIDARG,"PCM source channel layout changed without reset");
@@ -423,22 +436,47 @@ bool AudioRenderer::pumpOnce(AudioPcmSource& pipeline, double* firstWrittenPtsMs
     const auto endPts=pipeline.lastPullEndPtsMs();
     if (firstWrittenPtsMs) *firstWrittenPtsMs = firstPts;
     if (!started_ && !got) return checked(render_->ReleaseBuffer(0, 0),"Release empty prefill");
-    const UINT32 written=started_&&pipeline.padUnderruns()?avail:static_cast<UINT32>(got);
+    // File playback owns a continuous media timeline, so it may explicitly
+    // fill an empty read with silence. Live capture must not invent media
+    // frames for a short gap: doing so advances the timeline with synthetic
+    // audio and creates a clock jump when the next real block arrives. The
+    // endpoint remains silent when ReleaseBuffer(0) is used; the capture
+    // owner applies the bounded fade/re-anchor policy only for a persistent
+    // starvation.
+    const bool padSilence=started_&&pipeline.padUnderruns();
+    const UINT32 written=padSilence?avail:static_cast<UINT32>(got);
+    if(started_&&!pausedEndpoint_&&!padSilence){
+        const double nowMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if(liveGap_.observeEmpty(padding,got,nowMs,devicePeriodMs_)){
+            underruns_.fetch_add(1);clockStalledGaps_.fetch_add(1);
+            fadeInRemaining_=240;recoveryFades_.fetch_add(1);
+            log::warn("audio-gap",std::format("persistent empty endpoint periodMs={:.3f} clockMeasuredMissingFrames=unknown recoveryFadeArmed=true",devicePeriodMs_));
+        }
+    }
     if (got > 0) {
         for(unsigned c=0;c<inputFormat_.channels;++c)lastRaw_[c]=chunk_[(got-1)*inputFormat_.channels+c];
         const float target=std::clamp(gain_.load(),0.0f,1.0f);
         applyPcmGain(chunk_.data(),got,inputFormat_.channels,target,smoothedGain_);
+        if(fadeInRemaining_)fadePcmHead(chunk_.data(),got,inputFormat_.channels,fadeInRemaining_);
         if(target!=loggedGain_&&std::abs(smoothedGain_-target)<.00001f){loggedGain_=target;log::info("audio-gain",std::format("target={} reached={} framesWritten={} clockPreserved=true applicationPCM=true",target,smoothedGain_,framesWritten_.load()));}
         if(!copyPcm(dest,chunk_.data(),got)){render_->ReleaseBuffer(0,0);return false;}
         if (got < written) {
             std::memset(dest + got * outputFormat_.channels*4, 0, (written - got) * outputFormat_.channels*4);
             underruns_.fetch_add(1);
+            underrunFrames_.fetch_add(written-got);
+            silenceFrames_.fetch_add(written-got);
         }
     } else {
-        std::memset(dest, 0, static_cast<size_t>(avail) * outputFormat_.channels*4);
-        underruns_.fetch_add(1);
+        std::memset(dest, 0, static_cast<size_t>(written) * outputFormat_.channels*4);
+        if(started_&&!padSilence)emptyPulls_.fetch_add(1);
+        if(padSilence){
+            underruns_.fetch_add(1);
+            underrunFrames_.fetch_add(written);
+            silenceFrames_.fetch_add(written);
+        }
     }
     if (!checked(render_->ReleaseBuffer(written, 0),"ReleaseBuffer")) return false;
+    liveGap_.submitted(got);
     if(written>got)std::fill(lastRaw_.begin(),lastRaw_.end(),0);
     {
         std::lock_guard lock(timelineMutex_);
@@ -478,7 +516,7 @@ void AudioRenderer::stopAndReset()
     timelineWriteFrame_=0;
     bufferedMs_=0;smoothedGain_=0;
     {std::lock_guard lock(timelineMutex_);outputTimeline_.clear();timedPcm_=false;}
-    fading_=false;pausedEndpoint_=false;std::fill(lastRaw_.begin(),lastRaw_.end(),0);
+    fading_=false;pausedEndpoint_=false;fadeInRemaining_=0;liveGap_.reset();std::fill(lastRaw_.begin(),lastRaw_.end(),0);
 }
 
 AudioFadeResult AudioRenderer::fadeAndReset(AudioPcmSource& source,const std::atomic<bool>& cancel)
@@ -516,6 +554,8 @@ AudioFadeResult AudioRenderer::fadeAndReset(AudioPcmSource& source,const std::at
 
 bool AudioRenderer::started() const { return started_; }
 uint64_t AudioRenderer::underruns() const { return underruns_.load(); }
+uint64_t AudioRenderer::underrunFrames() const { return underrunFrames_.load(); }
+uint64_t AudioRenderer::silenceFrames() const { return silenceFrames_.load(); }
 uint64_t AudioRenderer::framesWritten() const { return framesWritten_; }
 
 void AudioRenderer::shutdown()
@@ -529,7 +569,7 @@ void AudioRenderer::shutdown()
     if (event_ != nullptr) { CloseHandle(event_); event_ = nullptr; }
     running_ = false;
     started_ = false;
-    fading_=false;pausedEndpoint_=false;
+    fading_=false;pausedEndpoint_=false;fadeInRemaining_=0;liveGap_.reset();
     bufferedMs_=0;framesWritten_=0;clockFrequency_=0;
     timelineWriteFrame_=0;
     {std::lock_guard lock(timelineMutex_);outputTimeline_.clear();timedPcm_=false;}
@@ -540,7 +580,7 @@ void AudioRenderer::setPaused(bool value)
 {
     std::lock_guard endpointLock(endpointMutex_);
     if (!client_ || !started_) return;
-    if(checked(value ? client_->Stop() : client_->Start(),"Pause/resume"))pausedEndpoint_=value;
+    if(checked(value ? client_->Stop() : client_->Start(),"Pause/resume")){pausedEndpoint_=value;liveGap_.reset();}
 }
 
 void AudioPipeline::runOnAudioThread(AudioRenderer* renderer, bool ownEndpoint)

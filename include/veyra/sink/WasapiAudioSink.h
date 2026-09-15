@@ -23,6 +23,7 @@
 #include "veyra/Log.h"
 #include "veyra/sink/AudioPcmSource.h"
 #include "veyra/sink/AudioFrameTimeline.h"
+#include "veyra/sink/CaptureAudioDsp.h"
 
 struct AVFormatContext;
 struct AVCodecContext;
@@ -63,8 +64,9 @@ public:
     bool decodingComplete() const { return decodedEof_.load(); }
 
     // Pull up to maxFrames source-layout frames; sets the PTS of the first pulled
-    // frame. Returns frames pulled (0 legal; caller writes silence and it is
-    // counted as an underrun by the pump only when the endpoint had space).
+    // frame. Returns frames pulled. A file source pads an empty endpoint with
+    // explicit silence; a live source may return 0 so the owner can preserve
+    // its media timeline and apply its bounded recovery policy.
     size_t pull(float* dst, size_t maxFrames, double* firstPtsMs) override;
 
     void stopThread();
@@ -156,7 +158,7 @@ private:
 class AudioRenderer {
 public:
     ~AudioRenderer(){shutdown();}
-    bool start(AudioFormat input = {});
+    bool start(AudioFormat input = {},double requestedBufferMs=10.0);
     AudioFormat outputFormat()const{std::lock_guard lock(endpointMutex_);return outputFormat_;}
     void setGain(float value){gain_.store(value);}
 
@@ -164,9 +166,9 @@ public:
     bool startAnchored(AudioPcmSource& pipeline, bool paused = false);
     void setPaused(bool value);
 
-    // Event-driven pump for ONE event cycle. Writes real data when the ring
-    // has it, silence otherwise (underrun counted). Returns false on hard
-    // failure.
+    // Event-driven pump for ONE event cycle. Writes real data when available;
+    // file sources pad with silence, while live sources release zero frames
+    // on an isolated gap so synthetic PCM cannot advance their timeline.
     bool waitForEvent();
     bool pumpOnce(AudioPcmSource& pipeline, double* firstWrittenPtsMs, bool wait = true);
 
@@ -181,6 +183,11 @@ public:
 
     bool started() const;
     uint64_t underruns() const;
+    uint64_t underrunFrames() const;
+    uint64_t silenceFrames() const;
+    uint64_t emptyPulls() const{return emptyPulls_.load();}
+    uint64_t recoveryFades() const{return recoveryFades_.load();}
+    uint64_t clockStalledGaps() const{return clockStalledGaps_.load();}
     uint64_t framesWritten() const;
     HRESULT lastError()const{return lastError_.load();}
     double bufferedMs()const{return bufferedMs_.load();}
@@ -207,12 +214,15 @@ private:
     HANDLE event_ = nullptr;
     UINT32 bufferFrames_ = 0;
     uint32_t sampleRate_ = kAudioRate;
+    double devicePeriodMs_=10;
     UINT64 clockFrequency_ = 0;
     std::atomic<UINT64> anchorPos_{0};
     std::atomic<double> anchorPtsMs_{0.0};
     std::atomic<bool> started_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> fading_{false};bool pausedEndpoint_=false;
+    size_t fadeInRemaining_=0;
+    LiveAudioGapTracker liveGap_;
     std::vector<float> lastRaw_=std::vector<float>(2,0);
     AudioFormat inputFormat_,outputFormat_;
     SwrContext* channelMix_=nullptr;
@@ -220,6 +230,9 @@ private:
     bool copyPcm(BYTE* destination,const float* input,size_t frames);
     bool comInited_ = false;
     std::atomic<uint64_t> underruns_{0};
+    std::atomic<uint64_t> underrunFrames_{0},silenceFrames_{0};
+    std::atomic<uint64_t> emptyPulls_{0},recoveryFades_{0};
+    std::atomic<uint64_t> clockStalledGaps_{0};
     std::atomic<uint64_t> framesWritten_{0};
     std::vector<float> chunk_;
 };

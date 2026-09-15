@@ -2042,6 +2042,16 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 
 本地 `package-portable.ps1` 已成功生成带 `dav1d.dll`、DAV1D 版权/SPDX 和 FFMPEG provenance 的1.2.0测试包。`portable-smoke.ps1` 的基础、社区NR、DLSS NR/FG场景产生了有效输出；最后的既有 VideoSR 断言因当前驱动未加载脚本要求的 `_nvngx.dll` 失败，日志保留在 `out/media-codec-dav1d-portable-smoke/video-sr-nr-fg.stdout.log`，不归因于AV1/MOV。新 FFmpeg 仍未替换1.2.0 GitHub Release，未制作/上传包含 dav1d 对应源码/port 的正式对应源码包；用户原始文件、长时播放、10/12-bit、4:2:2/4:4:4 和其他显卡尚未验收，不能宣称所有格式和设备均已支持。
 
+## 2026-09-14 采集音频爆音与沙沙声修复（本地）
+
+用户反馈采集卡音频偶发爆音、沙沙声，且已有多名用户反馈。排查确认采集音频格式可能按 DirectShow 枚举顺序先选 44.1 kHz；本机 USB3 卡实际 48 kHz 在后面。旧实时 renderer 在欠载时会直接停止/重置，WASAPI 实际共享缓冲约 22ms 而采集回调按10ms协商、启动只预填约10ms；另外 `validBits` 未贯穿，24-in-32/packed 24-bit 存在解释风险。
+
+本地施工增加48kHz优先的媒体类型选择、格式/validBits诊断及PCM归一化（16/32/packed24）、非有限值/削波/填充检查；采集端点请求20ms并预填20ms。短暂实时欠载改为不写伪造媒体静音帧、不推进媒体时间线，持续约30ms且输入同时缺失时先淡出，再重置PCM/重采样/漂移校正并重锚，避免硬停止造成 click。UI 分开展示欠载次数、缺口和真正插入的静音；欠载日志限频。物理回归测试增益固定0，避免听感干扰。
+
+实际构建：`scripts/build.ps1 -Preset x64-release -BuildDirectory out/build/audio-artifact-repair-20260914 -FfmpegRoot C:\veyra-deps\ffmpeg-ps5-dav1d-installed`，完整增量29/29、物理测试变更增量2/2，均 exit0。初次构建曾因 `CaptureAudioSession.h` 直接引入 `ks.h` 与工程 `GUID_NULL` 宏发生 include 顺序冲突，改为前置声明后恢复。`veyra_capture_audio_tests.exe` exit0；`--jitter` 与 `--jitter --5.1` 均 exit0（500×10ms，追加reset/underrun=0）；`veyra_multichannel_tests.exe` `checks=31 failures=0`；`veyra_audio_timeline_tests.exe --jitter` 1x/2x/4x均0 underrun。真实本机 `veyra_capture_tests.exe capture:0:0:0:0` exit0：选择48k/16-bit/16 valid bits，收到31个音频块，peak0.01043，欠载1次/576帧、插入静音0、重锚2次；测试全程应用增益0。首次实时欠载方案把合成静音推进媒体时间线导致时序阶段失败，改为不伪造实时媒体帧后复测通过；首次物理音频断言因测试没有视频锚点误判renderer未运行，改用显式音频时钟后通过。日志/证据目录为`logs/audio-artifact-repair-20260914*`，完整记录见`docs/CAPTURE_AUDIO_ARTIFACT_REPAIR_2026-09-14.md`。
+
+未修改NVIDIA/NGX运行时，未执行RTX runtime Create/Evaluate；未发布、未push、未替换正式包。真实反馈者采集卡型号、驱动与未静音听测仍待验收，不能宣称所有设备零欠载或问题已根治。下一步唯一任务：让反馈者使用本地修复版复现并回传`capture-audio-format`、`live-audio-sync`和`capture-audio-underrun`日志及听感时间点。
+
 ## 2026-09-14 用户 MOV 黑屏：负 AAC 起始 PTS 修复（本地）
 
 用户提供 `C:/Users/123/Videos/2026-08-11 21-29-44.mov`，反馈打开黑屏。文件 SHA256 为 `4D826CE4487F19A43375DC2BD8C4A0221926B5A9C29CD224E55FA9B6BFFEAC0A`，容器为 QuickTime/MOV，视频 H.264 High 2940x1912 60fps yuv420p，音频 AAC-LC 2ch 48kHz。视频-only 无损去音轨副本可以正常呈现，原文件软件解码和 D3D12VA 探针也分别 PASS，故排除 MOV/H.264 解码、硬解纹理导入和颜色初始化；原文件全播放器复现的黑屏只在带 AAC 音轨路径出现。
@@ -2049,3 +2059,63 @@ GitHub Release https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.0.0 于 
 根因是 `AudioPipeline::runOnAudioThread` 将 `headPtsMs()` 的所有负值都当成“没有可用音频”，而该 MOV 的 AAC 编码首帧合法起始 PTS 为 `-1.3ms`（编码器 priming）。音频 endpoint 因此只打开未锚定，音频主时钟没有启动，文件调度一直没有进入首帧呈现。`src/sink/WasapiAudioSink.cpp` 现在以实际预填充时长区分“空队列”与合法负 PTS，仅在 `prefetchedMs>0` 且 PTS 有限时锚定 renderer；`clockExhausted` 同步按预填充是否为空判断。未改变音频时间线、补偿、重采样或无音频文件路径。
 
 修复后重建 `out/media-codec-dav1d`（`scripts/build.ps1 ... -FfmpegRoot C:/veyra-deps/ffmpeg-ps5-dav1d-installed`，44/44 增量步骤成功，最终 build exit 0）。原始 MOV 全播放器无增强 10 秒测试 exit 0，`renderer ANCHORED ptsMs=-1.3` 后释放保持，`smoke frames=542 generated=0 failed=false`，`realPresented=540`、`presentSubmitFps=60.00`；证据 `out/mov-audio-fix.stdout.log`，FFmpeg 的 `UDTA parsing failed retrying raw` 仍为可恢复元数据警告，AAC 仍有 skipped-samples 时间戳警告但不再阻止播放。软件 H.264 30帧媒体探针、D3D12VA/共享设备 12帧探针、NGX NR Create/Evaluate/Release（0x1、SEH0）、`veyra_source_tests` 及 `veyra_audio_timeline_tests`（完整实时/WASAPI/恢复/欠速用例）均 exit 0。未改 GitHub Release、未替换正式包、未执行用户肉眼画质验收。
+
+## 2026-09-14 采集音频尖锐瞬态砂砾声：重采样过冲修复（二次施工）
+
+用户补充同一设备在 OBS 无沙沙声、Veyra 只在尖锐声音上出现。新增尖锐阶跃与自动补偿瞬态夹具后复现了内部原因：libswresample 默认 Kaiser 在 44.1→48 kHz 瞬态中产生峰值 1.05091，Veyra 的硬裁剪记录30个 clipped；输入本来就是48 kHz时，`swr_set_compensation` 启动有效变速后同样产生峰值1.13351、32个 clipped。故不是继续泛化为“采集卡本底噪声”。
+
+`src/sink/CaptureAudioSession.cpp` 现在为实时采集的所有 `SwrContext` 设置 `SWR_FILTER_TYPE_CUBIC`，包括48 kHz后续进入漂移补偿的路径，并记录 `capture-audio-resampler` 的输入/输出采样率、滤波器和 `compensationSafe=1`。测试 `veyra_capture_audio_tests.exe --transient` 与 `--transient-comp` 均 exit0：峰值0.999969、clipped=0、nonFinite=0。新增这一轮不是把诊断计数清零，而是先在真实转换输出上消除触发过冲的滤波器。
+
+最终构建命令：`scripts/build.ps1 -Preset x64-release -BuildDirectory out/build/audio-artifact-repair-20260914 -FfmpegRoot C:\veyra-deps\ffmpeg-ps5-dav1d-installed`，29/29、exit0。最终 `veyra_capture_audio_tests.exe`、`--jitter`（p95 skew 20.6725ms、clipped0）、`--jitter --5.1`（p95 skew 20.7548ms、clipped0）、`veyra_multichannel_tests.exe`（31/31）、`veyra_audio_timeline_tests.exe --jitter`（1x/2x/4x）均 exit0。最终本机 USB3 实卡选择48k/16-bit/16 valid bits，收到32块，peak0.05359，欠载1次/576帧，软件插入静音0，重锚2次；增益为0，未作扬声器听感宣称。独立WASAPI harness为48k/2ch/32-bit，4秒0 underrun、drift0.01ms、Stop+Reset padding=0，exit0。
+
+本轮修改与证据详见 `docs/CAPTURE_AUDIO_ARTIFACT_REPAIR_2026-09-14.md`。当前构建路径为 `out/build/audio-artifact-repair-20260914/veyra.exe`；未修改NVIDIA/NGX运行时，未执行RTX runtime Create/Evaluate，未发布、未push、未替换正式包。仍需反馈者在该构建上复测并回传听感时间点及 `capture-audio-resampler`、`capture-audio-samples`、`live-audio-sync` 日志；若新版仍有声音，再按实际采样率/补偿/欠载数据排查第二条路径。
+
+## 2026-09-15 用户复测否定 cubic：撤回并改为无低通的峰值保护
+
+用户明确反馈 cubic 版声音变闷、沙沙声反而更明显。上一条“cubic 已修复”结论撤回：测试中的 `clipped=0` 仅证明过冲被滤波器压掉，不能证明保真或听感正确。
+
+已从 `src/sink/CaptureAudioSession.cpp` 移除强制 cubic 和 `libavutil/opt.h`，恢复默认 Kaiser/48 kHz identity 路径；对重采样转换块只做共享线性增益峰值保护（ceiling 0.995、释放过程），不再逐样本硬裁剪、不用低通。新增 `peakProtectedSamples`，并对保护日志限频；UI 显示“输入峰值 / 保护 / 异常”。这条实现的意图是保留高频与瞬态，只处理过滤器过冲造成的满幅削波。
+
+实际命令 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Root "C:\Users\123\Desktop\Veyra DLSS Video Player" -Preset x64-release -BuildDirectory "out/build/audio-artifact-repair-20260914" -FfmpegRoot "C:\veyra-deps\ffmpeg-ps5-dav1d-installed"` exit 0；串行 `--transient`、`--transient-comp`、`--jitter`、`--jitter --5.1` 均 exit 0，分别确认过冲块实际触发保护而 `clipped=0`，抖动 p95 为 20.4106/20.3669ms；`veyra_multichannel_tests.exe` 为 `checks=31 failures=0`；本机 `capture:0:0:0:0` exit 0，实际选择 48k/16/16，测试增益0。`git diff --check` 仅有既存 CRLF 转换提示，无空白错误。
+
+当前仍未完成用户反馈者设备的未静音听感验收，不能宣称沙沙声已根治；未修改 NVIDIA/NGX runtime，未执行 RTX runtime Create/Evaluate，未发布或 push。
+
+## 2026-09-15 进一步修正：48 kHz 无补偿真正走 identity，修复 SwrContext 重建所有权
+
+继续审查发现旧 `clearCorrection()` 调用 `swr_set_compensation(swr,0,0)` 会把同速 48 kHz context 变成强制 resample；当前以 `compensationActive` 区分无补偿与补偿，补偿结束/重锚时新建默认 context，通过原 RAII owner 接管，避免无必要的高频处理。一次复测发现新 context 替换后旧智能指针悬挂，已修复后再测。
+
+完整构建 `scripts/build.ps1 -Root "C:\Users\123\Desktop\Veyra DLSS Video Player" -Preset x64-release -BuildDirectory "out/build/audio-artifact-repair-20260914" -FfmpegRoot "C:\veyra-deps\ffmpeg-ps5-dav1d-installed"` 为 29/29、exit0。最终串行回归：`--transient` peak1.05091/protected9582/clipped0；`--transient-comp` peak1.13518/protected9570/clipped0，重锚日志为 `native-rate path restored`；`--jitter` p95 20.7114ms；`--jitter --5.1` p95 20.4901ms；多声道31/31；音频时间线抖动1x/2x/4x；本机 `capture:0:0:0:0` exit0，48k/16/16、31块、欠载1/576帧、增益0。当前 EXE SHA256 `A98B657FA5F66F5C2A3CD26ADBFE0051DDB7C8EA7DCFC7F5D8907909D57EA7FA`，大小 3,375,616 bytes。未执行 RTX runtime Create/Evaluate，未发布或 push，用户反馈设备未静音听感待验收。
+
+## 2026-09-15 火堆/口哨持续沙沙声：重新审查（诊断与方案，非新修复交付）
+
+用户继续否定当前候选听感并要求审查Luna改动、给出解决方案。本轮保留全部已有产品改动和EXE，未构建/替换产品；新增 `scripts/diagnostics/audio-waveform-audit.py`、`docs/CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md`，在旧修复文档顶部标明历史结论的证据限制。
+
+最新真实使用会话 `logs/veyra-app.log` 第26036行起，00:09–00:24本地时间共448条同步状态，保护/削波/欠载计数均为0，最终转换后峰值0.95073；只有5次早期native context重建，之后仍持续非零时钟补偿。故过载、误淡入和少数重建不能直接解释持续噪声，不能再次强行认定根因。代码确有三项缺陷：块增益跳变且释放可再次削波、补偿归零销毁待输出滤波历史、空pull不看有效端点padding就触发5ms淡入。另有测试未检查波形、transient无视频锚点未启动输出、inputPeak其实为转换后峰值等证据缺口。
+
+实际执行 `python scripts/diagnostics/audio-waveform-audit.py --dll-dir out/build/audio-artifact-repair-20260914 > logs/audio-waveform-audit-20260915/offline-dsp.json`，exit0。使用该应用真实FFmpeg9.0.1 DLL，hash与patched prefix匹配。0.5幅值4kHz、-1250ppm补偿归零时，对比保留context与销毁重建，后者最终少17输出帧，边界后48帧最大差0.871988；固定补偿1/4/8/16kHz拟合实际频率后残差约-100.53/-100.96/-105.82/-112.71dBFS，同速归一化误差0。最初按理论频率拟合误将整数步长频偏计为较高残差，已修正分析；不能据此说库有高频噪声。峰值保护的算术模型中，相同1.05峰值的第二块保护后仍1.0475再触发裁剪；淡入模型展示无真实断音也可能令首样本增益下降约47.6dB。这两个为明确标注的算术模型，不冒充生产集成。
+
+完整实施/回归方案见新PLAN：先在原始PCM、重采样后、最终WASAPI提交前做有界受控tap和同源重放；去除新增失真、保持连续重采样历史，再按证据分离固定音画延迟与设备频差，不永久关闭同步或低通压噪。保留设备枚举、validBits、预填、视频reset隔离和MOV负PTS修复。下一条唯一任务P0生产波形定位。未执行产品构建/实卡听测/loopback/RTX Create或Evaluate；未修改运行组件，未push、未发布，沙沙声仍未通过用户验收。
+
+## 2026-09-15 用户要求先修已知音频缺陷：连续历史、浮点余量与空拉恢复
+
+本轮实施前述已确认缺陷，不盲改动态同步控制器、不加低通或降噪。修改 `CaptureAudioSession.cpp`、`WasapiAudioSink.cpp`及相应头文件、`LiveStatusPanel.h`、`CMakeLists.txt`；新增共享 `CaptureAudioDsp.h/.cpp`、生产DSP波形/真实WASAPI用例 `AudioWaveformTests.cpp`、串行限时回归脚本 `scripts/diagnostics/test-audio-continuity.ps1`；更新 `CaptureAudioTests.cpp` 的瞬态余量断言，并修复“模式切换掩盖断流恢复”的旧测试。方案完整记录为 `docs/CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md` §6。其他原有未提交改动全部保留。
+
+核心修改：移除块级峰值保护及转换阶段的有限浮点硬裁剪，NaN/Inf防护保留，转换后峰值和超unity计数分别记录；auto在预填前准备重采样，同一epoch归零只更新补偿，不换context或丢滤波历史；空pull仍有设备排队PCM时不触发淡入。第一次实现只以设备时钟超过提交尾部判gap，首套11组和两组120秒测试虽通过，但审查真实断供日志发现本机时钟在无数据时会停在尾部；新增真实80ms断供负向用例，明确复现 `emptyPulls=8 gaps=0 fades=0` 失败。后增加持续空端点观测满实际device period的保守路径，断流时长未知单列clockStalledGaps而不伪造missingFrames，持续恢复观察同时考虑空pull；修后同用例 `gaps=1 fades=1`，已有队列用例仍 `gaps=0 fades=0`。捕获基线现在在不改同步模式、尚未恢复输入时就验证已重锚，通过。
+
+构建到全新 `out/build/audio-continuity-repair-20260915`，未覆盖旧 `audio-artifact-repair-20260914/veyra.exe`（原SHA仍A98B657F…EA7FA）。先完成本地音频配置，再沿用现有RemotePlay依赖配置完整构建326/326、最终行为增量34/34成功，最终 `VEYRA_ENABLE_REMOTEPLAY=ON`，避免前序音频候选关闭PS5模块；FFmpeg仍 `C:/veyra-deps/ffmpeg-ps5-dav1d-installed`。完整 `scripts/build.ps1` 参数在PLAN §6，最终 `cmd.exe /c out\build\veyra-build-x64-release.cmd` 日志 `logs/audio-continuity-repair-20260915/build-verified.log`。首轮测试缺 `<string>` 导致C2039，补齐后成功；一次cmd正斜杠路径被拒绝，改反斜杠后正常。未隐藏失败日志。
+
+最终短套命令：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/diagnostics/test-audio-continuity.ps1 -BuildDirectory out/build/audio-continuity-repair-20260915 -LogDirectory logs/audio-continuity-repair-20260915/final`，12组进程均exit0，结果 `final/results.json`。其中生产DSP47/47，44.1/48kHz、2/6声道、1/4/8/16kHz、补偿正零负和480/127帧分块均与连续参考逐样本误差0、帧数一致；故障对照重置历史后由96001帧变为95935，能检出。其余包括真实WASAPI排队空拉和持续断流、捕获完整生命周期、立体声/5.1抖动、两类瞬态余量、端点失效恢复、多声道31/31、文件完整音频时间线与抖动。全部扬声器测试静音；无用户声学验收宣称。
+
+最终EXE空界面启动短测：`scripts/run-short-test.ps1 -Exe out/build/audio-continuity-repair-20260915/veyra.exe -Arguments @('--smoke-empty','--smoke-seconds','2','--no-nr','--no-sr','--no-fg') -TimeoutSeconds 30 -LogPrefix logs/audio-continuity-repair-20260915/final/gui-smoke`，独立 `VEYRA_LOG_FILE`，exit0；`frames=0 failed=false nrEvaluated=0 nvofExecuted=0`，只证明启动，未伪报播放/增强成功。git diff --check通过（已有CRLF警告）；没有SDK/DLL/模型/PYC被Git跟踪。最终两组各120秒快慢输入时钟漂移回归进行中，收口结果随后补充。
+
+未做：真实火堆/口哨输入与输出分段录音、用户实卡听感、RTX Create/Evaluate、全GPU delivery gate。没有修改增强算法/导出路径，故本轮以音频专项与GUI启动检查为主；不拿这些替代RTX/导出验收。未改运行组件、未push、未发布。持续沙沙声是否完全消失仍待新构建实测；若仍出现，下一条唯一任务是同源PCM逐阶段定位，不再凭音高猜过载。
+
+最终收口：`test-audio-continuity.ps1 ... -LogDirectory logs/audio-continuity-repair-20260915/final -DriftOnly` 两组exit0（最终目录12个短用例也全0）。1.001输入120秒P95偏差4.24594ms，0.999输入120秒4.30137ms，均missing0、resets1（仅启动）、队列高水位89.6458ms，无欠载/误淡入；证据 `final/drift-results.json`、`drift-fast.stdout.log`、`drift-slow.stdout.log`。这是合成采集节奏与真实WASAPI的专项回归，不是实卡听感。最终EXE 11,442,688字节，SHA256 `F26C655DDF7D9CF07FBA35AEA323059B9F65708139AB580015CF788B23D1D552`，路径 `out/build/audio-continuity-repair-20260915/veyra.exe`；旧候选hash未变。最终GUI空界面启动exit0、47项DSP检查通过、git diff --check通过；旧审查产生的单个PYC缓存已移除，未删用户数据。下一步用户复测新构建的真实火堆/口哨；未验收前不宣称沙沙声已根治。
+
+## 2026-09-15 用户授权本地合并与工作区收口
+
+用户要求“先合并一下，我需要一个干净的工作区”。确认本地 main（edabd3c）是当前修复分支（ebba6f1）的祖先；当前分支已包含媒体兼容、MOV负PTS、采集音频设备选择、FG时钟及此前HDR/多声道等改动。执行范围为提交现有23个源码/测试/诊断脚本/文档文件，然后以 `git switch main`、`git merge --ff-only codex/capture-fg-clock-repair-20260914` 收口，不另造冲突合并，不推送或发布。旧源码归档及已被取代的Smooth Motion实验分支不合入，所有原分支保留。
+
+合并前重新执行 `cmd.exe /c out\build\veyra-build-x64-release.cmd`：exit0，配置生成成功，ninja no work to do；保留RemotePlay ON与patched FFmpeg/dav1d路径。裸 `cmake --version` 因当前PATH未配置失败，改用已有脚本中的VS CMake绝对路径，实际版本3.31.6-msvc6；可选依赖与CMake策略警告不影响构建。`out/build/audio-continuity-repair-20260915/veyra_audio_waveform_tests.exe --offline`：exit0，checks=47 failures=0，输出位于本任务命令记录；前轮完整日志继续保留在 `logs/audio-continuity-repair-20260915/final/`，不冒充本轮重新执行。EXE hash仍为F26C655D…D1D552。`git diff --check` 无空白错误，仅已有CRLF转换提示。
+
+仅将审查过的源码、文档及脚本加入暂存；EXE、运行组件、日志与测试媒体仍被忽略且保留，不以删除本地文件制造干净工作区。当前验收目标是本地main包含修复提交、Git未提交/未跟踪状态为空；不改变真实沙沙声尚未听感验收的结论。本轮未执行RTX Create/Evaluate、GPU delivery或实卡测试，未重新跑120秒漂移用例。下一步仍是取得真实问题场景同源波形证据，用户当前远程不便测试，不要求立即验收。

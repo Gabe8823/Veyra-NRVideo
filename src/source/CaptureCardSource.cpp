@@ -205,7 +205,7 @@ bool CaptureCardSource::setAudioGain(float gain){
     p.lastAudioGain=gain;p.audioGainSupported=SUCCEEDED(hr);log::info("capture-audio",std::format("application gain={} hr=0x{:X}",gain,unsigned(hr)));return p.audioGainSupported;
 }
 void CaptureCardSource::videoPresented(double pts,int64_t time){if(p_->audioSession)p_->audioSession->videoPresented(pts,time);}
-void CaptureCardSource::videoReset(){if(p_->audioSession)p_->audioSession->videoReset();}
+void CaptureCardSource::videoReset(bool resetAudio){if(p_->audioSession)p_->audioSession->videoReset(resetAudio);}
 void CaptureCardSource::setAudioSync(unsigned mode,int offset){if(p_->audioSession)p_->audioSession->setSync(mode,offset);}
 sink::CaptureAudioState CaptureCardSource::audioState()const{auto state=p_->audioSession?p_->audioSession->snapshot():sink::CaptureAudioState{};if(!p_->audioError.empty())state.error=p_->audioError;return state;}
 bool CaptureCardSource::open(const SourceOpenDesc& desc){return configure(desc)&&start();}
@@ -285,19 +285,22 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
             if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat)supported=sink::parseWavePcm(type->pbFormat,type->cbFormat,pcm);
             if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)){
                 const auto* wave=reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat);
-                log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} tag={} channels={} rate={} bits={} pcm={}",typeIndex++,type->majortype.Data1,type->subtype.Data1,wave->wFormatTag,wave->nChannels,wave->nSamplesPerSec,wave->wBitsPerSample,supported?1:0));
+                log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} tag={} channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={} pcm={}",typeIndex++,type->majortype.Data1,type->subtype.Data1,wave->wFormatTag,wave->nChannels,supported?pcm.layout.mask:0,wave->nSamplesPerSec,wave->wBitsPerSample,supported?pcm.validBits:0,supported&&pcm.floating?1:0,supported?1:0));
             }else log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} format=0x{:08X} pcm=0",typeIndex++,type->majortype.Data1,type->subtype.Data1,type->formattype.Data1));
             if(supported)audioTypes.push_back(std::move(owned));
         }
         if(audioTypes.empty()){log::warn("capture-audio","audio pin has no supported PCM media type");return false;}
         std::stable_sort(audioTypes.begin(),audioTypes.end(),[](const auto& a,const auto& b){
-            return reinterpret_cast<const WAVEFORMATEX*>(a->pbFormat)->nChannels>reinterpret_cast<const WAVEFORMATEX*>(b->pbFormat)->nChannels;
+            sink::WavePcmFormat lhs{},rhs{};
+            if(!sink::parseWavePcm(a->pbFormat,a->cbFormat,lhs)||!sink::parseWavePcm(b->pbFormat,b->cbFormat,rhs))return false;
+            return sink::preferCaptureAudioFormat(lhs,rhs);
         });
         bool connectedAudio=false;
         for(const auto& owned:audioTypes){
             auto* type=owned.get();
             auto session=std::make_unique<sink::CaptureAudioSession>();ComPtr<IBaseFilter> candidate;ComPtr<IPin> terminal;
-            if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)&&session->configure(*reinterpret_cast<WAVEFORMATEX*>(type->pbFormat),type->cbFormat)){
+            sink::WavePcmFormat parsed{};
+            if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)&&sink::parseWavePcm(type->pbFormat,type->cbFormat,parsed)&&session->configure(parsed)){
                 auto* target=session.get();
                 hr=createNativeAudioSink(*type,[target](IMediaSample* sample){
                     BYTE* bytes=nullptr;REFERENCE_TIME begin=0,end=0;
@@ -310,7 +313,7 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
                 // Some devices reject this advisory API, so do not fail capture.
                 if(SUCCEEDED(hr))suggestCaptureAudioBuffering(audioPin.Get(),*reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat));
                 if(SUCCEEDED(hr))hr=p.graph->ConnectDirect(audioPin.Get(),terminal.Get(),type);
-                if(SUCCEEDED(hr)){p.audioSink=candidate;p.audioSession=std::move(session);connectedAudio=true;}
+                if(SUCCEEDED(hr)){p.audioSink=candidate;p.audioSession=std::move(session);connectedAudio=true;log::info("capture-audio",std::format("selected media type channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={}",parsed.layout.channels,parsed.layout.mask,parsed.wave.nSamplesPerSec,parsed.wave.wBitsPerSample,parsed.validBits,parsed.floating?1:0));}
                 else if(candidate)p.graph->RemoveFilter(candidate.Get());
                 log::info("capture-audio",std::format("PCM ConnectDirect hr=0x{:X}",unsigned(hr)));
             }

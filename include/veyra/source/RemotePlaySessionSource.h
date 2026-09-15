@@ -31,7 +31,7 @@ public:
     void setAudioGain(float value) { audio_.setGain(value); }
     void setAudioSync(unsigned mode, int offset) { audio_.setSync(mode, offset); }
     void videoPresented(double pts, int64_t host) { audio_.videoPresented(pts, host); }
-    void videoReset() { audio_.videoReset(); }
+    void videoReset(bool resetAudio=true) { audio_.videoReset(resetAudio); }
 private:
     friend struct RemotePlaySessionSourceTestAccess;
     void publishDecoded(const AVFrame*,pipeline::FramePacket,const SourceInfo&);

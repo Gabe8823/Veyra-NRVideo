@@ -436,9 +436,13 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                     resetRecord->reason=static_cast<uint8_t>(pipeline::ResetReason::Settings);
                     if(frameFlow)frameFlow->resetLifecycle(*resetRecord);
                     drainLivePresentation();
-                    if(physicalCapture)captureSource.videoReset();
+                    // Rebuilding the video graph must not tear down a healthy
+                    // capture audio endpoint; only the new video mapping is
+                    // invalidated here. Audio transport reset is reserved for
+                    // an actual pause/stop or input discontinuity.
+                    if(physicalCapture)captureSource.videoReset(false);
 #ifdef VEYRA_ENABLE_REMOTEPLAY
-                    if(remote)remote->videoReset();
+                    if(remote)remote->videoReset(false);
 #endif
 
                     // A drain may outlive several slider notifications. Build

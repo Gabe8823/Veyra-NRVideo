@@ -392,6 +392,7 @@ if(VEYRA_FFMPEG_ROOT AND EXISTS "${VEYRA_FFMPEG_ROOT}/include/libavformat/avform
   add_library(veyra_sinks STATIC
     src/sink/WasapiAudioSink.cpp
     src/sink/CaptureAudioSession.cpp
+    src/sink/CaptureAudioDsp.cpp
     src/sink/ImageExportSink.cpp
     src/sink/NvencD3D12Encoder.cpp
   )
@@ -484,6 +485,11 @@ if(VEYRA_FFMPEG_ROOT AND EXISTS "${VEYRA_FFMPEG_ROOT}/include/libavformat/avform
   target_compile_features(veyra_audio_timeline_tests PRIVATE cxx_std_20)
   target_link_libraries(veyra_audio_timeline_tests PRIVATE veyra_sinks)
   add_executable(veyra_capture_audio_tests tests/integration/CaptureAudioTests.cpp)
+  add_executable(veyra_audio_waveform_tests tests/integration/AudioWaveformTests.cpp)
+  target_compile_features(veyra_audio_waveform_tests PRIVATE cxx_std_20)
+  target_compile_definitions(veyra_audio_waveform_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_include_directories(veyra_audio_waveform_tests PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_link_libraries(veyra_audio_waveform_tests PRIVATE veyra_sinks ${FFMPEG_LIBRARIES})
   target_compile_features(veyra_capture_audio_tests PRIVATE cxx_std_20)
   target_link_libraries(veyra_capture_audio_tests PRIVATE veyra_sinks)
   target_compile_features(veyra_live_presentation_tests PRIVATE cxx_std_20)

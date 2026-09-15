@@ -38,7 +38,7 @@ public:
     bool setAudioGain(float); // call on the graph owner thread; never system volume
     CaptureMetrics metrics()const;
     void videoPresented(double ptsMs,int64_t host100ns);
-    void videoReset();
+    void videoReset(bool resetAudio=true);
     void setAudioSync(unsigned mode,int offsetMs);
     sink::CaptureAudioState audioState()const;
     const SourceInfo& info()const override;

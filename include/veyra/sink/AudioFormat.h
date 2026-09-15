@@ -46,6 +46,27 @@ inline bool parseWavePcm(const void* bytes,size_t size,WavePcmFormat& out){
        (result.floating&&(w.wBitsPerSample!=32||result.validBits!=32)))return false;
     out=result;return true;
 }
+// Capture devices frequently enumerate a low-rate compatibility format before
+// their native 48 kHz format.  Do not let DirectShow enumeration order choose
+// the format: the whole live path and the WASAPI renderer use 48 kHz PCM.
+inline bool preferCaptureAudioFormat(const WavePcmFormat& lhs,const WavePcmFormat& rhs){
+    const auto rateDistance=[](const WAVEFORMATEX& f)->uint32_t{
+        const auto rate=f.nSamplesPerSec;return rate>48000?rate-48000:48000-rate;
+    };
+    const bool lhs48=lhs.wave.nSamplesPerSec==48000,rhs48=rhs.wave.nSamplesPerSec==48000;
+    if(lhs48!=rhs48)return lhs48;
+    if(const auto l=rateDistance(lhs.wave),r=rateDistance(rhs.wave);l!=r)return l<r;
+    if(lhs.layout.channels!=rhs.layout.channels)return lhs.layout.channels>rhs.layout.channels;
+    const bool lhs16=!lhs.floating&&lhs.wave.wBitsPerSample==16&&lhs.validBits==16;
+    const bool rhs16=!rhs.floating&&rhs.wave.wBitsPerSample==16&&rhs.validBits==16;
+    if(lhs16!=rhs16)return lhs16;
+    const bool lhsFull=lhs.validBits==lhs.wave.wBitsPerSample;
+    const bool rhsFull=rhs.validBits==rhs.wave.wBitsPerSample;
+    if(lhsFull!=rhsFull)return lhsFull;
+    if(lhs.validBits!=rhs.validBits)return lhs.validBits>rhs.validBits;
+    if(lhs.floating!=rhs.floating)return !lhs.floating;
+    return lhs.wave.wBitsPerSample<rhs.wave.wBitsPerSample;
+}
 inline WAVEFORMATEXTENSIBLE floatWave(AudioFormat layout){
     WAVEFORMATEXTENSIBLE out{};out.Format={WAVE_FORMAT_EXTENSIBLE,WORD(layout.channels),48000,48000*layout.channels*4,WORD(layout.channels*4),32,22};
     out.Samples.wValidBitsPerSample=32;out.dwChannelMask=layout.mask;out.SubFormat=KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;return out;
