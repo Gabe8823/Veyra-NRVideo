@@ -2241,3 +2241,13 @@ WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer
 最终delivery.ps1 exit0，logs/delivery/1987bb07e103441591d6dacf2e632cac/result.json，实际NR/NVOF、4K和GUI/导出相关检查通过；capture awaiting仍保留。候选hash 00DD5FD72B1849006F86041723B150E9EDF3D19575DFBCC5B0E47CE2BF86AD8E，入口out/start-user-issues-candidate.cmd。XeSS旧版历史9057d2f/83f90ba面板也显式不可测；当前SDK状态字段无内部耗时，用户对应旧截图/版本未知，未伪造计时。
 
 本地按显式源文件清单提交，全屏前轮代码/审计文档一并存档；运行库、SDK、配置、日志/fixture不入Git，未push/发布。DirectShow实卡音频热恢复、非NVIDIA实机、40系/OBS/PS5原问题均未因此视为实机通过；原生DV与XeSS内部计时仍未实现，HDR转SDR没有无证据改曲线。下一步为候选问题设备复测及其原始证据定位。
+
+## 2026-09-15 拖动实时预览、NR强度暗部与导出收尾
+
+用户要求拖动途中出画面、检查NR全部参数及强度2暗部、调查导出99%失败和不弹保存窗口。实现及逐文件/测试细节见 `docs/SCRUB_NR_EXPORT_REPAIR_2026-09-15.md`。新增SeekPreview在UI保留单在途+最新目标，拖动临时暂停运输、显示每次已完成预览，释放优先精确定位并恢复先前播放状态。NR残差外推可能负值截黑，新增暗部切线连续正值延伸，不改输入/输出transfer和默认NR端点。旧参数测试未显式开启NR的漏洞已修，18组72次实际Evaluate；肤质/UI修正仍未证实。
+
+VideoExportJob修正视频包失败仍计数、检查关闭刷新、细分编码尾帧/MP4索引/验证/改名失败；验证报告帧号/PTS/源错误，长验证显示已检查帧数。ExportJobManager识别细分收尾进度。导出按钮不再因failed静默返回，使用独立worker已应用设置；其他拒绝和系统保存弹窗错误明确提示。既有文件/partial保留，不弱化帧数/时间戳/EOS验证。
+
+实际构建脚本scrub-nr-export-build系列exit0；shader45秒上限exit0、真实NR参数120秒上限exit0、最终GUI24秒/55秒上限exit0；前两次GUI测试失败及修正原因保留在对应文档。真实3600帧文件锁测试export-lock-final在全部解码通过后得到Windows32，并正确报告保存失败；export-corrupt-output破坏尾包后正确拒绝成功，两项各120秒上限exit0。computer-use实际点击导出按钮，观察另存为窗口及默认名字，取消未导出。
+
+完整 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.ps1 -Root . -BuildDirectory out/build/audio-continuity-repair-20260915` exit0：`logs/delivery/582eaf50540a4f2f82abf2b7b82b3cfc/result.json`。实际NR/NVOF、原生4K、GUI/图片、H264/HEVC4K2X导出/音轨/取消通过，采集待实卡。候选EXE SHA256 `E0FE742B3EC7B83BEA18390EA7E61472D5CBB925F8DC0A6809F925EE92DB86E9`，入口保持 `out/start-user-issues-candidate.cmd`。未改运行组件、SDK、版本或发布。反馈者99%根因尚缺原文件/日志，不能拿注入文件锁替代真实复现。后续继续独立的HDR转SDR曲线/色域修复。

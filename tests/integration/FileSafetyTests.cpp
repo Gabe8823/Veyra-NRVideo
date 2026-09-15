@@ -106,18 +106,24 @@ bool corruptLastVideoPacket(const std::filesystem::path& file){
 }
 
 void exportFaultTest(const std::wstring& path,const std::wstring& output,const std::wstring& mode){
-    std::atomic<bool> cancel=false;bool injected=false;std::wstring finalMessage;
+    std::atomic<bool> cancel=false;bool injected=false;std::wstring finalMessage;HANDLE outputLock=INVALID_HANDLE_VALUE;
     engine::PlayerOptions options;options.nr=options.sr=options.fg=false;unsigned boundaries=0;
     const bool ok=engine::exportVideo(path,output,options,false,cancel,[&](double progress,const std::wstring& message){
         finalMessage=message;
-        if(progress==.999){
+        if(!injected&&progress==.999){
             if(mode==L"export-corrupt-output"){injected=corruptLastVideoPacket(output+L".partial");check(injected,"damaged final encoded packet before integrity check");}
             else if(mode==L"export-cancel-verify"){cancel=true;injected=true;}
+            else if(mode==L"export-lock-final"){
+                outputLock=CreateFileW((output+L".partial").c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+                injected=outputLock!=INVALID_HANDLE_VALUE;
+            }
         }
     },0,[&]{if(mode==L"export-abort-boundary"&&++boundaries>10){injected=true;return false;}return true;});
+    if(outputLock!=INVALID_HANDLE_VALUE)CloseHandle(outputLock);
     check(injected&&!ok,"injected failure/cancellation cannot report success");
     check(!std::filesystem::exists(output)&&std::filesystem::exists(output+L".partial"),"failed output stays partial, never promoted");
     check(finalMessage.find(L"完成")==std::wstring::npos,"completion message does not claim success");
+    if(mode==L"export-lock-final")check(finalMessage.find(L"验证已通过")!=std::wstring::npos&&finalMessage.find(L"Windows错误 32")!=std::wstring::npos,"valid video with rename lock reports saving failure, not corrupt media");
 }
 
 void exportWorkerTest(const std::wstring& path,const std::wstring& output){

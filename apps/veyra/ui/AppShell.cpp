@@ -80,6 +80,7 @@ std::wstring exportOutput;unsigned exportFrames=0;unsigned cancelAfterMs=0;bool 
 std::vector<veyra::engine::SubtitleCue> subtitles;HWND subtitleLabel=nullptr;
 HFONT font=nullptr,emptyFont=nullptr;bool smokeZoom=false,smokeHover=false;ULONGLONG hoverPostedTick=0;int zoomStep=0;veyra::engine::PlayerSnapshot zoomBefore;bool smokeRollback=false,smokeRollbackFlow=false,smokeUi=false;int uiStep=0;bool smokeSettings=false;int settingsStep=0;bool smokeControls=false;int smokeStep=0;std::wstring smokeSave;
 std::wstring screenshotPath;ULONGLONG screenshotTick=0;bool screenshotPending=false,smokeScreenshot=false;int screenshotStep=0;
+#include "SeekPreview.h"
 void openFile(const std::wstring&);
 void layout();
 void updateComparison(){engine.comparison(holdOriginal?1:compareMode,referenceBase,compareSplit);}
@@ -247,7 +248,34 @@ void takeScreenshot(){
     screenshotPending=true;screenshotTick=GetTickCount64();
     engine.saveFrame(screenshotPath);SetWindowTextW(GetDlgItem(mainWindow,Save),L"保存中…");
 }
-void startVideoExport(bool hevc){auto s=engine.snapshot();if(currentFile.empty()||s.capture||s.image||!s.frames||s.applying||s.failed||exportJob.poll().active())return;std::vector<wchar_t> name(32768);OPENFILENAMEW d{sizeof(d)};d.hwndOwner=mainWindow;d.lpstrFile=name.data();d.nMaxFile=32768;d.lpstrFilter=L"MP4视频\0*.mp4\0";d.lpstrDefExt=L"mp4";d.Flags=OFN_EXPLORER|OFN_NOCHANGEDIR|OFN_PATHMUSTEXIST|OFN_OVERWRITEPROMPT;if(GetSaveFileNameW(&d)){exportJob.start(currentFile,name.data(),s.applied,hevc);jobPaused=false;layout();}}
+void startVideoExport(bool hevc){
+    const auto s=engine.snapshot();
+    const wchar_t* reason=nullptr;
+    if(currentFile.empty()||s.capture||s.image)reason=L"请先打开一个本地视频。";
+    else if(!s.frames||s.applying)reason=L"视频或效果正在初始化，请稍后重试。";
+    else if(exportJob.poll().active())reason=L"已有导出任务，请先完成或取消当前任务。";
+    if(reason){veyra::log::warn("export-dialog","request rejected by source/settings/job state");MessageBoxW(mainWindow,reason,L"暂时无法导出",MB_OK|MB_ICONINFORMATION);return;}
+    // Export owns a separate worker. A failed preview must not leave an
+    // enabled export button that silently ignores clicks; use applied settings.
+    std::vector<wchar_t> name(32768);
+    const auto suggested=std::filesystem::path(currentFile).stem().wstring()+L"-Veyra.mp4";
+    wcsncpy_s(name.data(),name.size(),suggested.c_str(),_TRUNCATE);
+    OPENFILENAMEW d{sizeof(d)};d.hwndOwner=mainWindow;d.lpstrFile=name.data();d.nMaxFile=DWORD(name.size());
+    d.lpstrFilter=L"MP4视频\0*.mp4\0";d.lpstrDefExt=L"mp4";
+    d.Flags=OFN_EXPLORER|OFN_NOCHANGEDIR|OFN_PATHMUSTEXIST|OFN_OVERWRITEPROMPT;
+    veyra::log::info("export-dialog","opening destination dialog");
+    if(GetSaveFileNameW(&d)){
+        // Never imply overwrite support: the worker deliberately preserves
+        // existing files, including a recoverable partial from an earlier job.
+        if(std::filesystem::exists(name.data())||std::filesystem::exists(std::wstring(name.data())+L".partial")){
+            MessageBoxW(mainWindow,L"这个名称的文件或 partial 已存在。为保留原文件，请使用新名称。",L"请选择新名称",MB_OK|MB_ICONINFORMATION);return;
+        }
+        exportJob.start(currentFile,name.data(),s.applied,hevc);jobPaused=false;layout();
+    }else if(const auto error=CommDlgExtendedError()){
+        veyra::log::error("export-dialog",std::format("GetSaveFileNameW failed code=0x{:08X}",error));
+        MessageBoxW(mainWindow,std::format(L"无法打开保存位置窗口，错误 0x{:08X}。详见诊断日志。",error).c_str(),L"导出窗口错误",MB_OK|MB_ICONERROR);
+    }else veyra::log::info("export-dialog","destination dialog cancelled");
+}
 
 #include "UiRepairChecks.h"
 #include "TransportChecks.h"
@@ -349,8 +377,8 @@ case Subtitle:if(lp)subtitleMenu();else{uiState.subtitles=!uiState.subtitles;lay
 case SubtitleLoad:{std::vector<wchar_t> name(32768);OPENFILENAMEW d{sizeof(d)};d.hwndOwner=hwnd;d.lpstrFile=name.data();d.nMaxFile=32768;d.lpstrFilter=L"SubRip 字幕\0*.srt\0";d.Flags=OFN_FILEMUSTEXIST|OFN_NOCHANGEDIR;if(GetOpenFileNameW(&d)){subtitles=veyra::engine::loadSrt(name.data());uiState.subtitles=true;layout();}break;}
 case SubtitleSize:subtitlePixels=subtitlePixels==22?28:subtitlePixels==28?34:22;break;
 case Recent:{std::vector<wchar_t> recent(32768);GetPrivateProfileStringW(L"Player",L"最近打开",L"",recent.data(),32768,(veyra::runtime::localDataDirectory()/"veyra.ini").wstring().c_str());openFile(recent.data());break;}
-case Play:{auto s=engine.snapshot();if(s.capture||s.image||s.transport==veyra::engine::TransportState::Opening||s.transport==veyra::engine::TransportState::Stopping)break;if(!currentFile.empty()&&(!s.running||s.transport==veyra::engine::TransportState::Ended)){openFile(currentFile);break;}paused=s.transport==veyra::engine::TransportState::Playing;engine.pause(paused);SetWindowTextW(GetDlgItem(hwnd,Play),paused?L"播放":L"暂停");break;}
-case Stop:engine.stop();break;
+case Play:{auto s=engine.snapshot();if(s.capture||s.image||s.transport==veyra::engine::TransportState::Opening||s.transport==veyra::engine::TransportState::Stopping)break;if(!currentFile.empty()&&(!s.running||s.transport==veyra::engine::TransportState::Ended)){openFile(currentFile);break;}if(seekPreview.active){seekPreview.resume=!seekPreview.resume;paused=!seekPreview.resume;break;}paused=s.transport==veyra::engine::TransportState::Playing;engine.pause(paused);SetWindowTextW(GetDlgItem(hwnd,Play),paused?L"播放":L"暂停");break;}
+case Stop:seekPreview={};engine.stop();break;
 case Save:takeScreenshot();break;
 case Sr:SendMessageW(hwnd,WM_APP+44,201,IsDlgButtonChecked(hwnd,Sr));break;
 case Multiplier:case Realtime:case Nr:case Fg:{auto changed=engine.snapshot().desired;const auto id=LOWORD(wp);
@@ -385,7 +413,7 @@ case Capture:case ProRailCapture:veyra::ui::showCapturePanel(hwnd,[](const std::
 case Export:if(uiState.mode==veyra::ui::Mode::Professional)startVideoExport(false);break;
 case Info:showDiagnostics=!showDiagnostics;layout();break;
 }return 0;
-case WM_HSCROLL:if(reinterpret_cast<HWND>(lp)==GetDlgItem(hwnd,Volume)){engine.setVolume(float(SendDlgItemMessageW(hwnd,Volume,TBM_GETPOS,0,0))/100,false);return 0;}if(reinterpret_cast<HWND>(lp)==seekBar){dragging=LOWORD(wp)==TB_THUMBTRACK;auto s=engine.snapshot();if(!dragging&&LOWORD(wp)!=TB_ENDTRACK&&s.duration>0)engine.seek(s.duration*SendMessageW(seekBar,TBM_GETPOS,0,0)/10000.0);}return 0;
+case WM_HSCROLL:if(reinterpret_cast<HWND>(lp)==GetDlgItem(hwnd,Volume)){engine.setVolume(float(SendDlgItemMessageW(hwnd,Volume,TBM_GETPOS,0,0))/100,false);return 0;}if(reinterpret_cast<HWND>(lp)==seekBar&&LOWORD(wp)!=TB_ENDTRACK){dragging=LOWORD(wp)==TB_THUMBTRACK;auto s=engine.snapshot();if(s.duration>0)seekPreview.update(s.duration*SendMessageW(seekBar,TBM_GETPOS,0,0)/10000.0,!dragging);}return 0;
 case WM_KEYDOWN:if(wp==VK_ESCAPE&&protectionArmed){cancelProtection();return 0;}if(wp==VK_SPACE){SendMessageW(hwnd,WM_COMMAND,Play,0);return 0;}if(wp==VK_F11){toggleFullscreen();return 0;}if(wp==VK_ESCAPE&&full){toggleFullscreen();return 0;}if(wp=='V'&&uiState.mode==veyra::ui::Mode::Professional){holdOriginal=true;updateComparison();return 0;}break;
 case WM_KEYUP:if(wp=='V'){holdOriginal=false;updateComparison();return 0;}break;
 case WM_SYSKEYDOWN:if(wp==VK_RETURN&&(lp&(1LL<<29))){toggleFullscreen();return 0;}break;
@@ -462,7 +490,8 @@ std::wstring metric=std::format(L"源帧处理 {:.1f} fps   ·   显示提交 {:
 if(uiState.mode==Mode::Professional&&!full&&!transition.running&&GetTickCount64()-dashboardTick>=250){dashboardTick=GetTickCount64();RECT client{};GetClientRect(hwnd,&client);RECT dashboard{0,client.bottom-dip(hwnd,232),client.right,client.bottom};InvalidateRect(hwnd,&dashboard,FALSE);}
 exportJob.watching(preferWatching&&s.running&&s.transport==veyra::engine::TransportState::Playing);auto job=exportJob.poll();exportPanelStatus(job,!currentFile.empty()&&!s.capture&&!s.image&&s.frames>0&&!s.applying,s.running&&s.frames>0);setText(GetDlgItem(hwnd,JobProgress),job.message+std::format(L"  {}%  · 查看",int(job.progress*100)));ShowWindow(GetDlgItem(hwnd,JobProgress),job.state==veyra::engine::ExportState::Idle||full?SW_HIDE:SW_SHOW);
 setText(GetDlgItem(hwnd,EmptyTitle),s.failed?L"播放已停止":L"开始观看");setText(GetDlgItem(hwnd,EmptyHint),s.failed?s.status:L"打开本地视频，或连接采集卡\n精细调整与原生导出在专业模式中");ShowWindow(GetDlgItem(hwnd,EmptyTitle),SW_HIDE);ShowWindow(GetDlgItem(hwnd,EmptyHint),SW_HIDE);
-if(dragging&&GetCapture()!=seekBar)dragging=false;
+if(dragging&&GetCapture()!=seekBar){dragging=false;seekPreview.released=true;}
+seekPreview.tick();
 if(!dragging&&s.duration>0){int position=int((s.seekPresented<s.seekRequested&&!s.failed?s.seekTarget:s.position)/s.duration*10000);if(SendMessageW(seekBar,TBM_GETPOS,0,0)!=position)SendMessageW(seekBar,TBM_SETPOS,TRUE,position);}
 if(!smokeViewApplied&&!smokeView.empty()&&(s.frames>0||smokeEmpty)){smokeViewApplied=true;if(smokeView==L"small")SetWindowPos(hwnd,nullptr,0,0,800,600,SWP_NOMOVE|SWP_NOZORDER);if(smokeView!=L"daily"&&smokeView!=L"empty"&&uiState.mode==veyra::ui::Mode::Daily)switchMode();if(smokeView==L"export")selectInspector(3);if(smokeView==L"diagnostics"){showDiagnostics=true;layout();}if(smokeView==L"fullscreen")toggleFullscreen();}
 if(smokeDualPause&&pausedPosition<0&&s.frames>20){engine.pause(true);pausedPosition=s.position;pausedFrames=s.frames;}

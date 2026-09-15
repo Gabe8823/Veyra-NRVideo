@@ -3,6 +3,18 @@ Texture2D<float4> nrInput:register(t1);
 Texture2D<float4> nrFinal:register(t2);
 RWTexture2D<float4> outputTex:register(u0);
 cbuffer Params:register(b0){float total;float darken;float brighten;float color;float luminance;float protectionEnabled;float featherPixels;float unused;float4 regions[4];}
+// Extrapolating a negative linear-light residual can cross zero even when
+// both input images contain shadow detail. Continue below the unboosted
+// endpoint with a positive, tangent-matched curve instead of hard clipping.
+// Identity and 0..1 mixing remain exact. Signed HDR gamut components remain
+// signed; this is a residual-strength safeguard, not an input/output gamma.
+float shadowSafe(float base,float rawDelta,float requestedDelta){
+    float anchorDelta=min(rawDelta,0.0);
+    float anchor=base+anchorDelta;
+    if(base>=0&&anchor>0&&requestedDelta<anchorDelta)
+        return anchor/(1.0+(anchorDelta-requestedDelta)/anchor);
+    return base+requestedDelta;
+}
 // Bilateral resampling of the change uses the preserved high-resolution base
 // as the edge guide. It never interpolates the high-resolution base itself.
 [numthreads(16,16,1)] void main(uint3 id:SV_DispatchThreadID){
@@ -29,8 +41,12 @@ cbuffer Params:register(b0){float total;float darken;float brighten;float color;
         delta+=(nrFinal[q].rgb-low)*weight;weights+=weight;
     }
     delta/=max(weights,1e-6);
+    float3 rawDelta=delta;
     if(darken!=1||brighten!=1)delta=min(delta,0)*darken+max(delta,0)*brighten;
     if(color!=1||luminance!=1){float dy=dot(delta,float3(0.2126,0.7152,0.0722));delta=dy*luminance+(delta-dy)*color;}
-    float3 result=base.rgb+total*(1-protection)*delta;
+    delta*=total*(1-protection);
+    float3 result=float3(shadowSafe(base.r,rawDelta.r,delta.r),
+                         shadowSafe(base.g,rawDelta.g,delta.g),
+                         shadowSafe(base.b,rawDelta.b,delta.b));
     outputTex[id.xy]=float4(unused>0.5?result:max(0,result),base.a);
 }

@@ -85,7 +85,7 @@ int runExportWorker(HANDLE mapping){
         return !cancel;
     };
     bool ok=false;try{ok=exportVideo(s->input,s->output,PlayerOptions::from(settings),s->hevc!=0,cancel,[&](double p,const std::wstring& message){if(InterlockedCompareExchange(&s->messageLock,1,0)==0){wcsncpy_s(s->message,message.c_str(),_TRUNCATE);InterlockedExchange(&s->messageLock,0);}
-InterlockedExchange(&s->progress,LONG(std::clamp(p,0.0,.999)*10000));if(message==L"正在封装和验证输出")InterlockedExchange(&s->state,LONG(ExportState::Finishing));},s->maxFrames,frameBoundary,[&](const ExportCounts& count){InterlockedExchange64(&s->sourceFrames,count.source);InterlockedExchange64(&s->generated,count.generated);InterlockedExchange64(&s->holds,count.holds);InterlockedExchange64(&s->encoded,count.encoded);});}catch(...){log::error("export-worker","unhandled job exception");}
+InterlockedExchange(&s->progress,LONG(std::clamp(p,0.0,.999)*10000));if(p>=.99)InterlockedExchange(&s->state,LONG(ExportState::Finishing));},s->maxFrames,frameBoundary,[&](const ExportCounts& count){InterlockedExchange64(&s->sourceFrames,count.source);InterlockedExchange64(&s->generated,count.generated);InterlockedExchange64(&s->holds,count.holds);InterlockedExchange64(&s->encoded,count.encoded);});}catch(...){log::error("export-worker","unhandled job exception");}
     done=true;monitor.join();InterlockedExchange(&s->state,LONG(ok?ExportState::Succeeded:cancel?ExportState::Cancelled:ExportState::Failed));UnmapViewOfFile(s);CloseHandle(mapping);return ok?0:cancel?3:1;
 }
 }
