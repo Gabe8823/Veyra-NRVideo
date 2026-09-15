@@ -66,7 +66,7 @@ inline void paintDashboard(HWND h,HDC dc,int w,int height,const engine::PlayerSn
     std::wstring status=L"待机";COLORREF color=RGB(145,151,149);
     if(s.failed){status=L"错误";color=RGB(245,86,86);}
     else if(s.remoteRecovering){status=L"恢复中";color=RGB(242,185,65);}
-    else if(active&&!s.applying&&f.rateWindowReady){status=history.overloaded?L"补帧受限":L"正常";color=history.overloaded?RGB(242,185,65):RGB(111,211,127);}
+    else if(active&&!s.applying&&f.rateWindowReady){status=history.overloaded?(s.applied.multiplier>1?L"补帧受限":L"处理过载"):L"正常";color=history.overloaded?RGB(242,185,65):RGB(111,211,127);}
     else if(s.applying&&s.running)status=L"调整中";else if(active)status=L"采样中";else if(s.transport==engine::TransportState::Paused)status=L"已暂停";
     text(L"当前状态",26+bw,bottom+6,bw-20,18,10,secondary);
     {AlphaGraphics draw(dc);Gdiplus::SolidBrush dot(Gdiplus::Color(255,GetRValue(color),GetGValue(color),GetBValue(color)));draw.get().FillEllipse(&dot,dip(h,27+bw),dip(h,bottom+35),dip(h,8),dip(h,8));}

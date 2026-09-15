@@ -3,6 +3,12 @@
 
 namespace veyra::engine {
 enum class FailedBackend { None, Infrastructure, OpticalFlow, NgxCore, Nr, Sr, Fg };
+inline bool disableUnsupportedNvidiaEffects(EnhancementSettings& settings,bool nvidia){
+    if(nvidia)return false;
+    const auto before=settings;settings.nr=false;settings.sr=false;
+    if(settings.frameGenerationBackend==FrameGenerationBackend::Dlss)settings.multiplier=1;
+    return settings!=before;
+}
 inline const wchar_t* backendFailureName(FailedBackend backend) {
     switch(backend){
     case FailedBackend::OpticalFlow:return L"光流";

@@ -52,5 +52,8 @@ int main(){
     budget.reset();check(!budget.predicted(25000000),"settings revision reset clears prior backend costs");
     budget.fgCost(20,25000000);budget.complete(12,true,false,25000000,3);
     check(budget.predicted(25000000)==29,"subtract same-frame FG time instead of another frame's higher percentile");
+    budget.complete(std::nullopt,true,false,36000000);
+    check(!budget.predicted(36000000),"missing GPU timing cannot retain a stale CPU polling cost");
+    check(!budget.admit(36000000,35800000,0,0),"unknown cost still rejects expired presentation deadlines");
     return failures?1:0;
 }

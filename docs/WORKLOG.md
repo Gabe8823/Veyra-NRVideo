@@ -2219,3 +2219,25 @@ WASAPI输入使用共享模式事件采集，按 `IAudioCaptureClient::GetBuffer
 初次新增测试引用不存在的makeReadbackBuffer构建失败后修正；固定0.1尼特中性容差在10000尼特FP16下超出格式精度，改按相对精度阈值，原失败日志保留。完整 `cmd.exe /c out\build\veyra-build-x64-release.cmd` exit0（38/38），日志 `logs/hdr-audit-product-build-20260915.log`。最终GUI无增强HDR文件3秒短测，30秒上限exit0，`logs/hdr-audit-gui-20260915.log`。仅诊断和测试接口变更，未重跑完整delivery；git diff --check通过。
 
 候选EXE SHA256 `1CAC34939919C19EEF1FF271857159E8786AD2EF1BA7FCA5CBD6EBE394DC6321`，原候选入口保持。完整结论及后续有证据再改映射的方案见 `docs/HDR_GRAY_CHAIN_AUDIT_2026-09-15.md`。下一条唯一任务：取得问题HDR片段和新日志，依据hdr-route区分原生HDR/转SDR，量化同帧变化再修映射，不凭主观发灰统一改gamma。未执行反馈者屏幕测光、实卡/PS5或未知HDR素材，未发布或变更运行组件。
+
+## 2026-09-15 全屏交互补修与14项对抗式复核
+
+用户反馈全屏不能拖动和方向键无效。使用computer-use原生输入在旧候选实际拖动，画面仍停留原时间附近；确认AppShell布局把playbackBar提到seekBar前、焦点留在滑块时快捷键被拦截。修改 `apps/veyra/ui/AppShell.cpp`：seekBar置前、全屏20 DIP命中区、进入/离开全屏及点击视频重新取得播放焦点、全屏左右键不受音量滑块阻拦但保留编辑框/弹出选择器边界；取消捕获后清除dragging，自动隐藏区域包含进度条上缘。`Theme.h`滑条鼠标按下取得焦点。新增 `TransportChecks.h` 经 `--smoke-transport` 验证真实HWND命中与消息队列。
+
+构建 `cmd.exe /c out\build\veyra-build-x64-release.cmd` 最终exit0，`logs/fullscreen-transport-build-b-20260915.log`；初次LONG/int初始化列表不一致导致编译失败后修正，保留原日志。18秒交互测试经run-short-test限制45秒，最终exit1：焦点/命中检查通过、拖动保持断言失败，此后出现非脚本发出的实际seek和方向键。测试与用户手动操作重合，但不能未经独立复核就归咎操作干扰；不声称自动交互回归通过。用户随后明确确认测试正常，记录第5项用户本机验收通过。候选hash `504E4A27DD6FC56262F97E63D9262ABBA2B68CBC9799C6B901359AC28BFEBF53`，入口保持 `out/start-user-issues-candidate.cmd`。
+
+用户接着要求复核14项是否完成及方向错误；本轮读取采集重连、颜色、分辨率、呈现resize、FG恢复/预算、计时、导出、DV路由的生产实现及原始日志，新增 `docs/USER_ISSUES_REPAIR_AUDIT_2026-09-15.md` 并更新原计划。用户确认1/2/3/5成功；第9原生DV、第11XeSS内部计时明确未完成；其他待硬件或原文件验收项不降格成完成。再次纠正旧SDR曲线/测试预期及把计时队列当视频队列的错误解释；额外指出DirectShow音频独立恢复、Stop返回值、GPU时间戳缺失时CPU预算回退、非NVIDIA请求/实际状态核对、无FG时“补帧受限”文案等缺口，没有把风险写成已复现根因。
+
+实际重跑：`out/build/audio-continuity-repair-20260915/veyra_repair_contract_tests.exe`，137 checks / 0 failures，exit0，`logs/user-issues-audit-contract-20260915.log`；`veyra_ui_contract_tests.exe out/user-issues-audit-ui-20260915`，exit0，384布局/DPI及设置/PCM合同通过，`logs/user-issues-audit-ui-20260915.log`。本轮审计未重跑NGX Create/Evaluate、GPU完整gate或实卡；引用历史证据均标明。未改运行组件、驱动、版本或发布状态。下一任务优先取得HDR实际路由/问题片源及4070/4070Ti后端失败和GPU预算证据；全屏自动回归需在无并行手动操作时独立复核。全部修复目标尚未完成。
+
+## 2026-09-15 独立FG选择生效与剩余代码缺口修复
+
+用户报告全关状态FG不生效、需先开NR，授权继续修能修的缺口。确认是SettingsWindow倍率选择在master关闭时只保存草稿，NR独立按钮开启master才带出FG；底层FG本来包含光流初始化条件，未添加隐式NR预热。FG选择接入显式开关事务，新增FgOnlyChecks经真实控件通知验证，具体根因/文件/命令/日志/限制见 docs/FG_STANDALONE_AND_RECOVERY_REPAIR_2026-09-15.md。
+
+同步修改FgRecoveryBudget缺失GPU时间不使用CPU迟轮询值、BackendRecovery及EngineController规范非NVIDIA请求/已应用状态、LiveStatusDashboard区分无FG的处理过载。CaptureCardSource抽取并复用DirectShow音频连接函数，新增AudioInputRecovery按PCM包进度检测3秒停滞/1至5秒退避；保留视频filter，短停共享图后仅重连音频pin、恢复音量同步、增加epoch并标下一帧Discontinuity。Stop失败不继续热改图，相关HRESULT记录；最终关闭时的异常驱动行为没有因此自动得到安全证明。WASAPI原有恢复不改、不换默认设备。
+
+构建脚本主构建79/79和最终30/30均exit0，日志fg-standalone-recovery-build[-final]-20260915.log。144项repair合同exit0（fg-recovery-contract-20260915.log），presentation_worker预算回归exit0（fg-recovery-budget-20260915.log）；首次误写不存在的测试EXE名，纠正后实际运行，不以那次未执行作为成功。FG-only GUI30秒/55秒总上限exit0，日志fg-only-selector-test-20260915.log：DLSS和XeSS实际生成，NVOF创建status0，NR评估0；XeSS Init/Present结果0持续framesPresented2。独立全屏18秒/45秒上限exit0，fullscreen-transport-isolated-20260915.log；此前与用户操作重合的失败保留。
+
+最终delivery.ps1 exit0，logs/delivery/1987bb07e103441591d6dacf2e632cac/result.json，实际NR/NVOF、4K和GUI/导出相关检查通过；capture awaiting仍保留。候选hash 00DD5FD72B1849006F86041723B150E9EDF3D19575DFBCC5B0E47CE2BF86AD8E，入口out/start-user-issues-candidate.cmd。XeSS旧版历史9057d2f/83f90ba面板也显式不可测；当前SDK状态字段无内部耗时，用户对应旧截图/版本未知，未伪造计时。
+
+本地按显式源文件清单提交，全屏前轮代码/审计文档一并存档；运行库、SDK、配置、日志/fixture不入Git，未push/发布。DirectShow实卡音频热恢复、非NVIDIA实机、40系/OBS/PS5原问题均未因此视为实机通过；原生DV与XeSS内部计时仍未实现，HDR转SDR没有无证据改曲线。下一步为候选问题设备复测及其原始证据定位。

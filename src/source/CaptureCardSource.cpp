@@ -117,7 +117,7 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
     // One pending frame plus one reader-owned frame, never an IMediaSample
     // reference. Holding the producer's sole RGB32 sample starves its allocator.
     AVFrame* frame=nullptr;AVFrame* pendingFrame=nullptr;bool pending=false,callbackError=false,configured=false;
-    double pendingTime=0,lastPts=0,readAgeMs=0;bool pendingDiscontinuity=false;
+    double pendingTime=0,lastPts=0,readAgeMs=0;bool pendingDiscontinuity=false,forceDiscontinuity=false;
     int64_t nominalDuration100ns=0;pipeline::Rational pendingDuration=pipeline::Rational::unknown();
     uint64_t received=0,dropped=0,lastDrop=0,sequence=0;
     Clock::time_point pendingArrival{},readArrival{},firstArrival{},latestArrival{};
@@ -127,6 +127,7 @@ struct CaptureCardSource::Impl:ISampleGrabberCB {
     std::unique_ptr<sink::CaptureAudioSession> audioSession;
     std::unique_ptr<WasapiAudioInput> wasapi;
     std::wstring audioError;
+    AudioInputRecovery audioRecovery;
     SourceInfo info;CaptureMediaLayout layout;Clock::time_point lastFrame;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** pp)override{if(!pp)return E_POINTER;*pp=nullptr;if(id==IID_IUnknown||id==__uuidof(ISampleGrabberCB)){*pp=static_cast<ISampleGrabberCB*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}ULONG STDMETHODCALLTYPE Release()override{return --refs;}
@@ -275,69 +276,7 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
         if(!p.wasapi->configure(selection.audioPath)){p.wasapi.reset();p.audioError=L"WASAPI 音频端点ID无效；视频继续运行";}
         log::info("capture-audio","binding=wasapi shared=1 explicitEndpoint=1 videoClock=ingress-host-estimate");
     }else if(audio!=kCaptureAudioDisabled){
-        const bool audioReady=[&]{
-        ComPtr<IBaseFilter> audioFilter;const bool embedded=audio==kCaptureAudioFromVideoDevice;
-        if(embedded){
-            // Some capture cards expose video and HDMI audio on one
-            // DirectShow filter. OBS calls this "use video device". Do not
-            // AddFilter/RemoveFilter here: p.device owns the graph filter.
-            audioFilter=p.device;log::info("capture-audio",std::format("binding=video-filter embedded=1 videoPathTag={}",pathTag(selection.videoPath)));
-        }else{
-            const bool bound=selection.stable?bindPath(selection.audioPath,true,audioFilter):bind(unsigned(audio),true,audioFilter);
-            if(!bound){log::warn("capture-audio",std::format("binding=separate failed mode={} audioIndex={} audioPathTag={}",audio,audio,pathTag(selection.audioPath)));return false;}
-            hr=p.graph->AddFilter(audioFilter.Get(),L"Capture audio");
-            if(FAILED(hr)){log::warn("capture-audio",std::format("binding=separate AddFilter hr=0x{:08X}",uint32_t(hr)));return false;}
-            p.audioFilter=audioFilter;log::info("capture-audio",std::format("binding=separate embedded=0 audioIndex={} audioPathTag={}",audio,audio,pathTag(selection.audioPath)));
-        }
-        ComPtr<IPin> audioPin;hr=audioPinFor(p.builder.Get(),audioFilter.Get(),audioPin);
-        if(FAILED(hr)){log::warn("capture-audio",std::format("audio output pin not found embedded={} hr=0x{:08X}",embedded?1:0,uint32_t(hr)));return false;}
-        ComPtr<IEnumMediaTypes> types;hr=audioPin->EnumMediaTypes(&types);if(FAILED(hr)){log::warn("capture-audio",std::format("EnumMediaTypes hr=0x{:08X}",uint32_t(hr)));return false;}
-        // Preserve the device's actual speaker layout. Enumeration order is
-        // commonly stereo first even when native 5.1 is available.
-        auto releaseType=[](AM_MEDIA_TYPE* type){freeType(type);};
-        using AudioType=std::unique_ptr<AM_MEDIA_TYPE,decltype(releaseType)>;
-        std::vector<AudioType> audioTypes;unsigned typeIndex=0;
-        for(;;){AM_MEDIA_TYPE* type=nullptr;if(types->Next(1,&type,nullptr)!=S_OK||!type)break;
-            AudioType owned(type,releaseType);sink::WavePcmFormat pcm;bool supported=false;
-            if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat)supported=sink::parseWavePcm(type->pbFormat,type->cbFormat,pcm);
-            if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)){
-                const auto* wave=reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat);
-                log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} tag={} channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={} pcm={}",typeIndex++,type->majortype.Data1,type->subtype.Data1,wave->wFormatTag,wave->nChannels,supported?pcm.layout.mask:0,wave->nSamplesPerSec,wave->wBitsPerSample,supported?pcm.validBits:0,supported&&pcm.floating?1:0,supported?1:0));
-            }else log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} format=0x{:08X} pcm=0",typeIndex++,type->majortype.Data1,type->subtype.Data1,type->formattype.Data1));
-            if(supported)audioTypes.push_back(std::move(owned));
-        }
-        if(audioTypes.empty()){log::warn("capture-audio","audio pin has no supported PCM media type");return false;}
-        std::stable_sort(audioTypes.begin(),audioTypes.end(),[](const auto& a,const auto& b){
-            sink::WavePcmFormat lhs{},rhs{};
-            if(!sink::parseWavePcm(a->pbFormat,a->cbFormat,lhs)||!sink::parseWavePcm(b->pbFormat,b->cbFormat,rhs))return false;
-            return sink::preferCaptureAudioFormat(lhs,rhs);
-        });
-        bool connectedAudio=false;
-        for(const auto& owned:audioTypes){
-            auto* type=owned.get();
-            auto session=std::make_unique<sink::CaptureAudioSession>();ComPtr<IBaseFilter> candidate;ComPtr<IPin> terminal;
-            sink::WavePcmFormat parsed{};
-            if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)&&sink::parseWavePcm(type->pbFormat,type->cbFormat,parsed)&&session->configure(parsed)){
-                auto* target=session.get();
-                hr=createNativeAudioSink(*type,[target](IMediaSample* sample){
-                    BYTE* bytes=nullptr;REFERENCE_TIME begin=0,end=0;
-                    if(FAILED(sample->GetPointer(&bytes))||FAILED(sample->GetTime(&begin,&end)))return VFW_E_SAMPLE_TIME_NOT_SET;
-                    return target->push(bytes,size_t(sample->GetActualDataLength()),double(begin)/10000,sample->IsDiscontinuity()==S_OK)?S_OK:E_FAIL;
-                },candidate,terminal);
-                if(SUCCEEDED(hr))hr=p.graph->AddFilter(candidate.Get(),L"Veyra audio PCM");
-                // Request small input blocks before connection; downstream
-                // playback cannot undo time spent filling a driver buffer.
-                // Some devices reject this advisory API, so do not fail capture.
-                if(SUCCEEDED(hr))suggestCaptureAudioBuffering(audioPin.Get(),*reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat));
-                if(SUCCEEDED(hr))hr=p.graph->ConnectDirect(audioPin.Get(),terminal.Get(),type);
-                if(SUCCEEDED(hr)){p.audioSink=candidate;p.audioSession=std::move(session);connectedAudio=true;log::info("capture-audio",std::format("selected media type channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={}",parsed.layout.channels,parsed.layout.mask,parsed.wave.nSamplesPerSec,parsed.wave.wBitsPerSample,parsed.validBits,parsed.floating?1:0));}
-                else if(candidate)p.graph->RemoveFilter(candidate.Get());
-                log::info("capture-audio",std::format("PCM ConnectDirect hr=0x{:X}",unsigned(hr)));
-            }
-            if(connectedAudio)break;
-        }
-        return connectedAudio;
-        }();
+        const bool audioReady=connectDirectShowAudio(desc);
         if(!audioReady){
             p.audioError=L"采集音频设备或 PCM 格式不可用；视频继续运行";
             log::warn("capture-audio","audio connection unavailable; retaining video capture");
@@ -367,12 +306,103 @@ bool CaptureCardSource::configure(const SourceOpenDesc& desc){close();p_->lastAu
         p.info.width,p.info.height,p.info.averageFps,actual?unsigned(actual->subtype.Data1):0,unsigned(formatHr),audio));freeType(actual);
     return true;
 }
+bool CaptureCardSource::connectDirectShowAudio(const SourceOpenDesc& desc){
+    auto& p=*p_;CaptureSelection selection;if(!parseCapturePath(desc.path,selection))return false;
+    const int audio=selection.audio;HRESULT hr=S_OK;
+    ComPtr<IBaseFilter> audioFilter;const bool embedded=audio==kCaptureAudioFromVideoDevice;
+    if(embedded){
+        // Some capture cards expose video and HDMI audio on one
+        // DirectShow filter. OBS calls this "use video device". Do not
+        // AddFilter/RemoveFilter here: p.device owns the graph filter.
+        audioFilter=p.device;log::info("capture-audio",std::format("binding=video-filter embedded=1 videoPathTag={}",pathTag(selection.videoPath)));
+    }else{
+        const bool bound=selection.stable?bindPath(selection.audioPath,true,audioFilter):bind(unsigned(audio),true,audioFilter);
+        if(!bound){log::warn("capture-audio",std::format("binding=separate failed mode={} audioIndex={} audioPathTag={}",audio,audio,pathTag(selection.audioPath)));return false;}
+        hr=p.graph->AddFilter(audioFilter.Get(),L"Capture audio");
+        if(FAILED(hr)){log::warn("capture-audio",std::format("binding=separate AddFilter hr=0x{:08X}",uint32_t(hr)));return false;}
+        p.audioFilter=audioFilter;log::info("capture-audio",std::format("binding=separate embedded=0 audioIndex={} audioPathTag={}",audio,audio,pathTag(selection.audioPath)));
+    }
+    ComPtr<IPin> audioPin;hr=audioPinFor(p.builder.Get(),audioFilter.Get(),audioPin);
+    if(FAILED(hr)){log::warn("capture-audio",std::format("audio output pin not found embedded={} hr=0x{:08X}",embedded?1:0,uint32_t(hr)));return false;}
+    ComPtr<IEnumMediaTypes> types;hr=audioPin->EnumMediaTypes(&types);if(FAILED(hr)){log::warn("capture-audio",std::format("EnumMediaTypes hr=0x{:08X}",uint32_t(hr)));return false;}
+    // Preserve the device's actual speaker layout. Enumeration order is
+    // commonly stereo first even when native 5.1 is available.
+    auto releaseType=[](AM_MEDIA_TYPE* type){freeType(type);};
+    using AudioType=std::unique_ptr<AM_MEDIA_TYPE,decltype(releaseType)>;
+    std::vector<AudioType> audioTypes;unsigned typeIndex=0;
+    for(;;){AM_MEDIA_TYPE* type=nullptr;if(types->Next(1,&type,nullptr)!=S_OK||!type)break;
+        AudioType owned(type,releaseType);sink::WavePcmFormat pcm;bool supported=false;
+        if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat)supported=sink::parseWavePcm(type->pbFormat,type->cbFormat,pcm);
+        if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)){
+            const auto* wave=reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat);
+            log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} tag={} channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={} pcm={}",typeIndex++,type->majortype.Data1,type->subtype.Data1,wave->wFormatTag,wave->nChannels,supported?pcm.layout.mask:0,wave->nSamplesPerSec,wave->wBitsPerSample,supported?pcm.validBits:0,supported&&pcm.floating?1:0,supported?1:0));
+        }else log::info("capture-audio",std::format("mediaType={} major=0x{:08X} subtype=0x{:08X} format=0x{:08X} pcm=0",typeIndex++,type->majortype.Data1,type->subtype.Data1,type->formattype.Data1));
+        if(supported)audioTypes.push_back(std::move(owned));
+    }
+    if(audioTypes.empty()){log::warn("capture-audio","audio pin has no supported PCM media type");return false;}
+    std::stable_sort(audioTypes.begin(),audioTypes.end(),[](const auto& a,const auto& b){
+        sink::WavePcmFormat lhs{},rhs{};
+        if(!sink::parseWavePcm(a->pbFormat,a->cbFormat,lhs)||!sink::parseWavePcm(b->pbFormat,b->cbFormat,rhs))return false;
+        return sink::preferCaptureAudioFormat(lhs,rhs);
+    });
+    bool connectedAudio=false;
+    for(const auto& owned:audioTypes){
+        auto* type=owned.get();
+        auto session=std::make_unique<sink::CaptureAudioSession>();ComPtr<IBaseFilter> candidate;ComPtr<IPin> terminal;
+        sink::WavePcmFormat parsed{};
+        if(type->formattype==FORMAT_WaveFormatEx&&type->pbFormat&&type->cbFormat>=sizeof(WAVEFORMATEX)&&sink::parseWavePcm(type->pbFormat,type->cbFormat,parsed)&&session->configure(parsed)){
+            auto* target=session.get();
+            hr=createNativeAudioSink(*type,[target](IMediaSample* sample){
+                BYTE* bytes=nullptr;REFERENCE_TIME begin=0,end=0;
+                if(FAILED(sample->GetPointer(&bytes))||FAILED(sample->GetTime(&begin,&end)))return VFW_E_SAMPLE_TIME_NOT_SET;
+                return target->push(bytes,size_t(sample->GetActualDataLength()),double(begin)/10000,sample->IsDiscontinuity()==S_OK)?S_OK:E_FAIL;
+            },candidate,terminal);
+            if(SUCCEEDED(hr))hr=p.graph->AddFilter(candidate.Get(),L"Veyra audio PCM");
+            // Request small input blocks before connection; downstream
+            // playback cannot undo time spent filling a driver buffer.
+            // Some devices reject this advisory API, so do not fail capture.
+            if(SUCCEEDED(hr))suggestCaptureAudioBuffering(audioPin.Get(),*reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat));
+            if(SUCCEEDED(hr))hr=p.graph->ConnectDirect(audioPin.Get(),terminal.Get(),type);
+            if(SUCCEEDED(hr)){p.audioSink=candidate;p.audioSession=std::move(session);connectedAudio=true;log::info("capture-audio",std::format("selected media type channels={} mask=0x{:X} rate={} containerBits={} validBits={} floating={}",parsed.layout.channels,parsed.layout.mask,parsed.wave.nSamplesPerSec,parsed.wave.wBitsPerSample,parsed.validBits,parsed.floating?1:0));}
+            else if(candidate)p.graph->RemoveFilter(candidate.Get());
+            log::info("capture-audio",std::format("PCM ConnectDirect hr=0x{:X}",unsigned(hr)));
+        }
+        if(connectedAudio)break;
+    }
+    return connectedAudio;
+}
 bool CaptureCardSource::start(){
     auto& p=*p_;if(p.info.opened)return true;if(!p.configured||!p.control)return false;
     if(p.audioSession&&!p.audioSession->start())log::warn("capture-audio","audio start failed; retaining video capture");
+    p.audioRecovery.reset(GetTickCount64());
     p.lastFrame=Impl::Clock::now();const auto hr=p.control->Run();p.info.opened=SUCCEEDED(hr);
     if(p.info.opened&&p.wasapi&&!p.wasapi->start())p.audioError=L"WASAPI 音频启动失败；视频继续运行";
     veyra::log::info("capture",std::format("Run hr=0x{:X} actual={}x{} nominalFps={:.3f} mailbox=1 ownedBuffers=2",unsigned(hr),p.info.width,p.info.height,p.info.averageFps));return p.info.opened;
+}
+void CaptureCardSource::recoverAudio(float gain,unsigned syncMode,int offsetMs){
+    auto& p=*p_;if(!p.info.opened||!p.control||p.wasapi)return;
+    CaptureSelection selection;if(!parseCapturePath(reconnectDesc_.path,selection)||!selection.stable||selection.audio==kCaptureAudioDisabled||selection.audio==kCaptureAudioWasapi)return;
+    const auto state=p.audioSession?p.audioSession->snapshot():sink::CaptureAudioState{};
+    if(!p.audioRecovery.due(state.inputBlocks,GetTickCount64()))return;
+    // DirectShow audio/video pins share one graph. Briefly stop it to mutate
+    // only the audio branch; do not renegotiate or replace the video device.
+    const HRESULT stopped=p.control->Stop();
+    log::warn("capture-audio-reconnect",std::format("PCM stalled; Stop hr=0x{:08X} videoFilterRetained=1",uint32_t(stopped)));
+    if(FAILED(stopped)){p.audioError=L"音频恢复等待采集驱动停止；稍后重试";return;}
+    const bool connected=[&]{
+        if(p.audioSink){const HRESULT hr=p.graph->RemoveFilter(p.audioSink.Get());log::info("capture-audio-reconnect",std::format("Remove PCM sink hr=0x{:08X}",uint32_t(hr)));if(FAILED(hr))return false;p.audioSink.Reset();}
+        if(p.audioSession)p.audioSession->stop();
+        p.audioSession.reset();
+        if(p.audioFilter){const HRESULT hr=p.graph->RemoveFilter(p.audioFilter.Get());log::info("capture-audio-reconnect",std::format("Remove audio device hr=0x{:08X}",uint32_t(hr)));if(FAILED(hr))return false;p.audioFilter.Reset();}
+        if(!connectDirectShowAudio(reconnectDesc_))return false;
+        p.audioSession->setGain(gain);p.audioSession->setSync(syncMode,offsetMs);
+        return p.audioSession->start();
+    }();
+    {std::lock_guard lock(p.mutex);p.pending=false;p.forceDiscontinuity=true;}
+    ++epoch_;p.lastFrame=Impl::Clock::now();
+    const HRESULT resumed=p.control->Run();p.info.opened=SUCCEEDED(resumed);
+    p.audioError=connected&&p.info.opened?L"":L"采集音频暂不可用，正在重试原音频设备";
+    log::info("capture-audio-reconnect",std::format("connected={} Run hr=0x{:08X} epoch={} awaitingActualPCM=1",connected,uint32_t(resumed),epoch_));
 }
 bool CaptureCardSource::reconnect(float gain,unsigned syncMode,int offsetMs){
     CaptureSelection selection;
@@ -382,7 +412,7 @@ bool CaptureCardSource::reconnect(float gain,unsigned syncMode,int offsetMs){
     const auto desc=reconnectDesc_;const auto key=reconnectFormat_;const auto expected=reconnectInfo_;
     // Stop callbacks before carrying counters into the next device session.
     // Never hold the mailbox lock while DirectShow Stop waits for a callback.
-    if(p_->control)p_->control->Stop();
+    if(p_->control){const HRESULT hr=p_->control->Stop();log::info("capture-reconnect",std::format("Stop hr=0x{:08X}",uint32_t(hr)));if(FAILED(hr))return false;}
     {std::lock_guard lock(p_->mutex);
         receivedOffset_+=p_->received;deliveredOffset_+=p_->sequence;droppedOffset_+=p_->dropped;}
     close();
@@ -421,6 +451,7 @@ SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,c
         if(!p.sequence)flags|=static_cast<uint32_t>(pipeline::FrameFlagBits::Open);
         if(p.dropped!=p.lastDrop)flags|=static_cast<uint32_t>(pipeline::FrameFlagBits::Drop);
         if(p.pendingDiscontinuity)flags|=static_cast<uint32_t>(pipeline::FrameFlagBits::Discontinuity);
+        if(p.forceDiscontinuity){flags|=static_cast<uint32_t>(pipeline::FrameFlagBits::Discontinuity);p.forceDiscontinuity=false;}
         p.lastDrop=p.dropped;p.lastPts=time;++p.sequence;sequence=p.received;
     }
     p.frame->pts=static_cast<int64_t>(time*10000000);p.frame->duration=duration.isUnknown()?0:duration.to100ns();p.frame->time_base={1,10000000};packet={};packet.pts={p.frame->pts,10000000};packet.duration=duration;packet.colorInfo=p.info.color;packet.sourceKind=pipeline::SourceKind::CaptureCard;packet.sequence=sequence;packet.flags=flags;packet.sourceEpoch=1;
@@ -429,11 +460,11 @@ SourceReadStatus CaptureCardSource::readWithWait(pipeline::FramePacket& packet,c
     *frame=p.frame;p.lastFrame=Impl::Clock::now();return SourceReadStatus::Frame;
 }
 void CaptureCardSource::close()noexcept{
-    auto& p=*p_;if(p.control)p.control->Stop();if(p.grab)p.grab->SetCallback(nullptr,0);
+    auto& p=*p_;if(p.control){const HRESULT hr=p.control->Stop();if(FAILED(hr))log::error("capture-close",std::format("Stop failed hr=0x{:08X}; releasing graph",uint32_t(hr)));}if(p.grab){const HRESULT hr=p.grab->SetCallback(nullptr,0);if(FAILED(hr))log::error("capture-close",std::format("detach callback hr=0x{:08X}",uint32_t(hr)));}
     if(p.wasapi)p.wasapi->stop();p.wasapi.reset();
     if(p.audioSession)p.audioSession->stop();p.audioError.clear();
     p.events.Reset();p.control.Reset();p.grab.Reset();p.nullFilter.Reset();p.grabFilter.Reset();p.audioSink.Reset();p.audioFilter.Reset();p.config.Reset();p.device.Reset();p.builder.Reset();p.graph.Reset();p.referenceClock.Reset();p.audioSession.reset();
     av_frame_free(&p.frame);av_frame_free(&p.pendingFrame);p.info={};
-    p.sequence=p.received=p.dropped=p.lastDrop=0;p.pending=p.callbackError=p.configured=false;p.lastPts=p.readAgeMs=0;
+    p.sequence=p.received=p.dropped=p.lastDrop=0;p.pending=p.callbackError=p.configured=p.forceDiscontinuity=false;p.lastPts=p.readAgeMs=0;
 }
 }

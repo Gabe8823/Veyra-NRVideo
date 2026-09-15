@@ -21,9 +21,24 @@
 #include "veyra/sink/ArrivalClockMapping.h"
 #include "veyra/sink/CaptureSyncTarget.h"
 #include "veyra/source/DolbyVision.h"
+#include "veyra/source/AudioInputRecovery.h"
 int main(){
     using namespace veyra;int failures=0,checks=0;
     auto check=[&](bool ok,const char* name){++checks;if(!ok)++failures;std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n';};
+    {
+        source::AudioInputRecovery retry;retry.reset(1000);
+        check(!retry.due(0,3999)&&retry.due(0,4000),"missing initial PCM retries after bounded startup grace");
+        check(!retry.due(0,4500)&&retry.due(0,5000),"audio retry has bounded backoff instead of every video frame");
+        check(!retry.due(1,5100)&&!retry.due(2,8100),"silent PCM packet progress prevents reconnect");
+        check(!retry.due(2,11099)&&retry.due(2,11100),"audio-only PCM stall is detected while video may continue");
+    }
+    {
+        engine::EnhancementSettings s;s.nr=s.sr=true;s.multiplier=2;
+        check(engine::disableUnsupportedNvidiaEffects(s,false)&&!s.nr&&!s.sr&&s.multiplier==1,"unsupported NVIDIA effects are removed from actual settings");
+        s.nr=s.sr=true;s.multiplier=2;s.frameGenerationBackend=engine::FrameGenerationBackend::XeSS;
+        check(engine::disableUnsupportedNvidiaEffects(s,false)&&!s.nr&&!s.sr&&s.multiplier==2,"non-NVIDIA normalization retains independently selected XeSS");
+        s.nr=true;check(!engine::disableUnsupportedNvidiaEffects(s,true)&&s.nr,"NVIDIA capability normalization retains supported effects");
+    }
     {
         engine::EnhancementSettings requested;requested.nr=requested.sr=true;requested.multiplier=2;requested.audioOffsetMs=37;
         auto recovered=requested;

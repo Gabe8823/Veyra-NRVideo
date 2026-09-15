@@ -30,7 +30,11 @@ class FgRecoveryBudget {
 public:
     void reset(){base_.clear();fg_.clear();warmup_.clear();limited_=false;recoveryPairs_=0;retryAt_=0;}
     void fgCost(double ms,int64_t now){add(fg_,now,ms);}
-    void complete(double ms,bool evaluated,bool warmup,int64_t now,std::optional<double> measuredFg={}){
+    void complete(std::optional<double> measuredMs,bool evaluated,bool warmup,int64_t now,std::optional<double> measuredFg={}){
+        // Missing GPU timestamps are unknown, not CPU polling delay. Let old
+        // samples expire; admission still checks each batch's real deadline.
+        if(!measuredMs)return;
+        const double ms=*measuredMs;
         if(warmup){add(warmup_,now,ms);return;}
         const auto extra=evaluated?(measuredFg?measuredFg:p95(fg_,now,20000000)):std::optional<double>(0);
         // If a generated batch lacks a GPU timing, retain its whole measured

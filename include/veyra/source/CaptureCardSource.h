@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 #include "veyra/sink/CaptureAudioSession.h"
+#include "veyra/source/AudioInputRecovery.h"
 namespace veyra::source {
 struct CaptureFormat {int index=0;unsigned width=0,height=0;double fps=0;std::wstring label;std::wstring key;};
 struct CaptureDevice {
@@ -38,6 +39,8 @@ public:
     bool configure(const SourceOpenDesc&);
     bool start();
     bool reconnect(float gain,unsigned syncMode,int offsetMs);
+    // Owner-thread recovery of DirectShow audio pins; same video filter retained.
+    void recoverAudio(float gain,unsigned syncMode,int offsetMs);
     bool setAudioGain(float); // call on the graph owner thread; never system volume
     CaptureMetrics metrics()const;
     void videoPresented(double ptsMs,int64_t host100ns,int64_t arrival100ns);
@@ -50,6 +53,7 @@ public:
     bool seek(const pipeline::Rational&)override{return false;}
     void close()noexcept override;
 private:
+    bool connectDirectShowAudio(const SourceOpenDesc&);
     SourceReadStatus readWithWait(pipeline::FramePacket&,const AVFrame**,unsigned milliseconds);
     struct Impl;std::unique_ptr<Impl> p_;
     SourceOpenDesc reconnectDesc_;

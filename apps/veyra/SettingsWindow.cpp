@@ -97,6 +97,12 @@ bool read(engine::EnhancementSettings& s,bool allPages=false){s=enhancementEnabl
 // Each notification changes one field on the latest desired settings. Hidden
 // controls and incomplete numeric text can never overwrite another field.
 bool liveField(int id){
+    if(id==202){
+        const auto index=send(id,CB_GETCURSEL);if(index==CB_ERR)return false;
+        const bool accepted=SendMessageW(GetParent(window),WM_APP+44,202,index+1)!=0;
+        populate(enhancementEnabled?controller->snapshot().desired:configuredSettings);
+        message(accepted?L"已请求补帧；无需先开启NR。":L"总增强正在切换，请待当前事务完成。");return accepted;
+    }
     auto s=enhancementEnabled?controller->snapshot().desired:configuredSettings;
     if(id>=100&&id<=111){
         wchar_t b[64]{};GetWindowTextW(item(id),b,64);wchar_t* end=nullptr;float v=wcstof(b,&end);
@@ -106,7 +112,6 @@ bool liveField(int id){
     }else switch(id){
         case 219:s.captureCompatible=checked(id)==BST_CHECKED;break;
         case 218:s.nrRuntime=static_cast<engine::NrRuntime>(send(id,CB_GETCURSEL));break;
-        case 202:s.multiplier=uint32_t(send(id,CB_GETCURSEL)+1);break;
         case 203:s.nrPolicy=static_cast<pipeline::NrSizePolicy>(send(id,CB_GETCURSEL));break;
         case 204:s.flow=static_cast<engine::FlowQuality>(send(id,CB_GETCURSEL));break;
         case 205:s.content=static_cast<engine::ContentRate>(send(id,CB_GETCURSEL));break;

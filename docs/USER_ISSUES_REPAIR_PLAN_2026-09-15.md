@@ -265,3 +265,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gates/delivery.p
 代码回退基线 `6206b5a`；本轮在独立分支提交，验证期间保留原应用目录。不要重置用户未提交改动，不把回退扩大成删除运行组件/配对/配置。
 
 下一步是以上问题设备的候选验收及按原始日志追踪剩余缺陷。原生Dolby Vision、XeSS内部计时、DirectShow音频pin独立热重建和PotPlayer级seek预解码仍未交付，不能将本轮报告称为14项全部实机修复完成。
+
+## 11. 用户验收与审计更新
+
+2026-09-15后续施工见 [独立补帧与恢复修复](FG_STANDALONE_AND_RECOVERY_REPAIR_2026-09-15.md)：FG选择遗漏开启总增强的UI根因已修，DLSS/XeSS均在NR执行0次时通过；音频分支恢复、GPU预算缺失样本、非NVIDIA实际设置及欠速文案补齐。完整软件gate通过，硬件和未实现功能边界继续保留。
+
+用户2026-09-15确认第1、2、3项成功；全屏交互再次修正后确认第5项测试正常。最新逐项判定、已推翻的修复方向、未交付项及当前候选身份见 [14项复核](USER_ISSUES_REPAIR_AUDIT_2026-09-15.md)。以上旧状态/候选hash保留作追溯，不覆盖最新结论。第9项原生DV、第11项XeSS内部精确计时未完成；第4、6的HDR、8、10、12、13、14不具备全部问题设备验收证明。
