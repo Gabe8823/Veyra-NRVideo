@@ -28,4 +28,12 @@
 
 ## 发布状态
 
-本地修复分支、发布文档和版本号已提交；随后推送 `main`、创建 `v1.3.0` tag，上传上表三个ZIP及`.sha256`，再用GitHub API比对远端字节数和digest。完成后在本节追加远端release ID和核对结果；未授权关机。
+远端发布已完成，且没有移动已发布的 `v1.3.0` tag：
+
+- GitHub Release：[`Likely7/Veyra-NRVideo v1.3.0`](https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.3.0)
+- Release ID：`RE_kwDOUTcMa84XMU4n`
+- 状态：`draft=false`、`prerelease=false`、`publishedAt=2026-09-15T12:03:08Z`
+- Git：`main` 与 `v1.3.0` 已推送；远端 tag 仍指向发布提交 `05dea56`。
+- 远端资产核对：三个ZIP及其三个`.sha256`均为`state=uploaded`；远端字节数和SHA-256与上表逐项一致。核对对象为便携包 `422573820` 字节、RemotePlay源码 `143747463` 字节、FFmpeg源码 `25277828` 字节。
+
+这次发布没有执行关机，也没有把完整 Dolby Vision RPU/增强层、Atmos 对象音频、XeSS 内部精确 GPU 时间或未经实机验收的硬件兼容性写成已完成能力。
