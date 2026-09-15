@@ -13,22 +13,19 @@
 
 Windows 视频播放器与采集卡增强工具。支持视频、图片、采集卡实时预览和 PS5 局域网串流，可组合使用超分辨率、NR 画面增强与补帧。
 
-[下载 1.2.0 免安装版](https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.2.0) · [更新记录](docs/RELEASE_NOTES_1.2.0.md) · [反馈问题](https://github.com/Likely7/Veyra-NRVideo/issues)
+[下载 1.3.0 免安装版](https://github.com/Likely7/Veyra-NRVideo/releases/tag/v1.3.0) · [更新记录](docs/RELEASE_NOTES_1.3.0.md) · [反馈问题](https://github.com/Likely7/Veyra-NRVideo/issues)
 
-## 当前开发状态（2026-09-15）
+## 1.3.0 更新
 
-本地 `main` 已整合到修复提交 `dc44c48`。上方下载仍指向 **1.2.0 发布包**，不包含之后的 AV1/MOV、采集音频设备选择、实时补帧时钟和最新音频连续性修复；这些改动目前仅在本地源码与测试构建中，未推送、未发布。
+1.3.0整合1.2.0之后的播放器、采集音频、颜色与补帧修复。新增拖动时预览、全屏进退10秒、采集设置记忆及NR多档内部分辨率；改善AV1/MOV播放、采集自动同步与杂音、SDR颜色和HDR转SDR映射。实时DLSS多帧生成改为逐子帧就绪提交，右侧帧率统一为显示提交。
 
-- 音频已修复连续重采样历史、浮点余量和空拉恢复等已确认缺陷，撤回造成声音发闷的处理。**火堆、口哨场景的沙沙声尚未完成真实听感验收，不能宣称已根治。**
-- 媒体兼容改进有 AV1 MP4、ProRes MOV 等样本证据；MOV 是容器，不承诺所有编码组合可播放。AV1 / ProRes 导出仍不支持。
-- 采集音频现在可在“音频监听”中选择 DirectShow 音频或明确的 WASAPI 录音端点；WASAPI 使用共享模式、稳定端点 ID 和现有 PCM 音频处理链，不自动选择麦克风，也不做系统回录。
-- 分支整合、逐项验证与候选程序位置见 [当前修复汇总](docs/LOCAL_INTEGRATION_STATUS_2026-09-15.md)。已发布功能说明与未发布修复应分别阅读。
+完整列表与已知限制见[1.3.0更新说明](docs/RELEASE_NOTES_1.3.0.md)。完整杜比视界、Atmos对象渲染和XeSS内部精确GPU计时尚未提供；不同显卡与采集设备仍需实机验证。
 
 ## 功能
 
 | 功能 | 支持内容 |
 | --- | --- |
-| 播放与采集 | H.264 / HEVC 视频、PNG / JPEG 图片、DirectShow / UVC 采集卡 |
+| 播放与采集 | H.264 / HEVC / AV1、兼容的MOV/ProRes视频、PNG / JPEG 图片、DirectShow / UVC 采集卡 |
 | 超分辨率 | DLSS SR、RTX Video SR；2K / 4K / 8K 目标，保持画面比例 |
 | NR 增强 | 实验性 NVIDIA NR；实时档与原生档，风格、强度和局部保护调整 |
 | 帧生成 | DLSS 2X / 3X / 4X，实验性 XeSS 2X 预览补帧 |
@@ -40,11 +37,11 @@ Windows 视频播放器与采集卡增强工具。支持视频、图片、采集
 
 日常模式以观看为主；专业模式展开增强参数、诊断和导出工具。切换模式不需要重新打开视频。
 
-1.2.0 新增 HDR 文件/采集增强、HDR10 导出与 HDR 截图、5.1 PCM 保留，以及“转为 SDR 显示”预览开关。首次启动仍默认关闭所有增强；RTX30 实卡表现仍待验收。
+保留1.2.0引入的HDR文件/采集增强、HDR10导出与HDR截图、5.1 PCM，以及“转为SDR显示”预览开关。首次启动仍默认关闭所有增强；RTX30实卡表现仍待验收。
 
 ## 下载与运行
 
-1. 在 [Releases](https://github.com/Likely7/Veyra-NRVideo/releases) 下载 **Veyra-1.2.0-win64-portable.zip**，不要下载 Source code。
+1. 在 [Releases](https://github.com/Likely7/Veyra-NRVideo/releases) 下载 **Veyra-1.3.0-win64-portable.zip**，不要下载 Source code。
 2. 完整解压到一个可写文件夹，双击 **Veyra.exe**。无需安装 SDK、Python 或开发工具。
    首次启动 NR、超分和内部补帧均关闭，确认基础画面后按需开启；导入旧设置会恢复原来的开关。
 3. 使用当前显卡驱动。要使用 NVIDIA NR、DLSS、RTX Video SR 和 NVENC，需兼容的 NVIDIA RTX 显卡；本版本主要在 RTX 5070 上验证。
@@ -139,13 +136,13 @@ NR 与 DLSS 帧生成属于 **community experimental / 社区实验集成**，�
 
 ## 开发与许可
 
-[构建说明](docs/BUILD.md) · [组件清单](docs/RUNTIME_COMPONENTS_1.2.0.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
+[构建说明](docs/BUILD.md) · [组件清单](docs/RUNTIME_COMPONENTS_1.3.0.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
 
 Veyra 原有源码采用 [GPLv3](LICENSE)；含串流的组合程序同时适用 [AGPLv3 与上游 OpenSSL 例外](licenses/remoteplay/CHIAKI_AGPL3_OPENSSL.txt)。应用源码对应版本标签，Release 另附串流依赖与 FFmpeg 对应源码包，普通用户无需下载。SDK、模型和运行时不进入源码仓库；Release 组件按各自许可与实验发布范围单独提供。
 
-## HDR 与 5.1（1.2.0）
+## HDR 与 5.1（1.2.0 起，1.3.0 保留）
 
-以下能力已进入 1.2.0。真实 HDR 屏、5.1 扬声器和不同采集卡仍须逐台验收。
+以下能力在 1.2.0 引入并由 1.3.0 保留。真实 HDR 屏、5.1 扬声器和不同采集卡仍须逐台验收。
 
 - **HDR 输入 / 增强**：文件、P010/P016 采集与 PS5 HDR；支持明确标记的 BT.2020 NCL / PQ 或 HLG。Windows HDR 开启时，可组合 NR、DLSS SR / RTX Video SR、DLSS / XeSS 补帧。NR / Video SR 使用 SDR 代理和 HDR 基底合成，压缩高光和近黑区域的增强会衰减；不把 SDR 结果逆造为原始 HDR。HLG 使用 1000nit / gamma 1.2 参考转换。
 - **SDR 显示开关**：采集卡面板的“转为 SDR 显示”默认关闭，控制所有实时预览。打开后将 HDR 映射为 SDR，增强照常可用；播放中切换无需重连，可能短暂停顿。关闭后跟随显示器 HDR 状态。截图跟随当前画面，视频导出保持原有 HDR 规则。

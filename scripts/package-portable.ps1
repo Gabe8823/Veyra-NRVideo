@@ -97,6 +97,10 @@ foreach ($notice in Get-ChildItem -LiteralPath (Join-Path $resolvedRoot 'third_p
 Copy-Payload (Join-Path $resolvedRoot 'runtime_local/config/ngx-local.json') 'runtime/config/ngx-local.json'
 Copy-Payload (Join-Path $ffmpegRoot 'share/ffmpeg/copyright') 'licenses/FFMPEG-COPYRIGHT.txt'
 Copy-Payload (Join-Path $ffmpegRoot 'share/ffmpeg/vcpkg.spdx.json') 'licenses/FFMPEG-SPDX.json'
+if ($applicationFiles -contains 'dav1d.dll') {
+  Copy-Payload (Join-Path $ffmpegRoot 'share/dav1d/copyright') 'licenses/DAV1D-COPYRIGHT.txt'
+  Copy-Payload (Join-Path $ffmpegRoot 'share/dav1d/vcpkg.spdx.json') 'licenses/DAV1D-SPDX.json'
+}
 $dav1dCopyright = Join-Path $ffmpegRoot 'share/dav1d/copyright'
 $dav1dSpdx = Join-Path $ffmpegRoot 'share/dav1d/vcpkg.spdx.json'
 if (Test-Path -LiteralPath $dav1dCopyright -PathType Leaf) { Copy-Payload $dav1dCopyright 'licenses/DAV1D-COPYRIGHT.txt' }

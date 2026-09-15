@@ -4,9 +4,9 @@
 
 ## Current local candidate / 当前本地候选（2026-09-15）
 
-The integrated source baseline is `dc44c48` on local `main`, not a new release. See [integration status](LOCAL_INTEGRATION_STATUS_2026-09-15.md). The existing verified candidate is `out/build/audio-continuity-repair-20260915/veyra.exe`, built with RemotePlay **ON** and `C:/veyra-deps/ffmpeg-ps5-dav1d-installed` (PS5 slice patch retained, dav1d enabled). Full machine-specific build arguments are recorded in [audio repair §6](CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md#6-用户要求先修已知缺陷后的实施2026-09-15).
+Version 1.3.0 integrates the repairs through `14b6ee0`. The release build uses `out/build/audio-continuity-repair-20260915`, RemotePlay **ON**, and `C:/veyra-deps/ffmpeg-ps5-dav1d-installed` (PS5 slice patch retained, dav1d enabled). Full machine-specific build arguments are recorded in [audio repair §6](CAPTURE_AUDIO_WAVEFORM_REPAIR_PLAN_2026-09-15.md#6-用户要求先修已知缺陷后的实施2026-09-15); use equivalent paths on your machine. See [1.3.0 source instructions](REMOTEPLAY_BUILD_1.3.0.md) and [runtime identities](RUNTIME_COMPONENTS_1.3.0.md).
 
-Do not use the reduced default build below as proof of full-player equivalence, or package this newer source as the unchanged 1.2.0 release. A future release needs explicit authorization and a matching dependency/source audit, including dav1d. Historical release build instructions and component identities below remain unchanged.
+The reduced default build below is not the full release configuration. Version 1.3.0 supplies corresponding FFmpeg/dav1d and Remote Play source assets separately from the portable ZIP. Historical instructions below remain reference material.
 
 Targeted audio verification from the repository root:
 
@@ -64,9 +64,9 @@ The NGX configuration lives in `runtime_local/config/ngx-local.json` for develop
 
 ## Dependency Sources
 
-Release 1.2.0 includes `Veyra-1.2.0-FFmpeg-source.zip` separately: the patched FFmpeg source, SPDX-verified vcpkg port and patches, notices, and configuration queried from the shipped DLL. It is not needed to run Veyra.
+Release 1.3.0 includes `Veyra-1.3.0-FFmpeg-source.zip` separately: the patched FFmpeg/dav1d source, SPDX-verified vcpkg ports and patches, notices, and configuration queried from the shipped DLLs. It is not needed to run Veyra.
 
-The AV1 software-decoding experiment is kept in a separate local FFmpeg prefix until its corresponding-source package and release audit are complete. It uses FFmpeg's LGPL build with the optional LGPL-compatible dav1d backend. MOV is a container rather than a codec: ProRes/H.264/HEVC MOV playback is tested independently, while an AV1 file must still use a container/muxer that actually carries AV1 (typically MP4 or WebM). A file extension alone is never treated as a compatibility guarantee.
+The 1.3.0 AV1 path uses FFmpeg's LGPL build with dav1d 1.5.4; its separate source asset includes the matching patched FFmpeg tree, dav1d source, port recipes, notices and binary configuration. MOV is a container rather than a codec: ProRes/H.264/HEVC MOV playback is tested independently, while AV1 needs a compatible container such as MP4 or WebM. Extensions alone do not guarantee compatibility.
 
 - FFmpeg: https://github.com/FFmpeg/FFmpeg/tree/n9.0.1 ; vcpkg port source recorded in the distributed `licenses/FFMPEG-SPDX.json`.
 - vcpkg FFmpeg port: https://github.com/microsoft/vcpkg/tree/55cd8b8a4f19d8e6ba2ad114c8acacc4af5915a0/ports/ffmpeg . Its patches and the LGPL notices are part of the corresponding-source material.

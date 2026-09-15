@@ -13,6 +13,7 @@ parser.add_argument('--vcpkg', type=Path, required=True)
 parser.add_argument('--source', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--version', required=True)
+parser.add_argument('--dav1d-source', type=Path)
 args = parser.parse_args()
 if args.output.exists():
     raise SystemExit('Output exists; choose a new candidate')
@@ -48,9 +49,22 @@ with os.add_dll_directory(str((args.prefix / 'bin').resolve())):
     license_name = lib.avcodec_license().decode()
 if license_name != 'LGPL version 2.1 or later':
     raise SystemExit(f'Unexpected library license: {license_name}')
+extra_sources = []
+if '--enable-libdav1d' in configuration:
+    if not args.dav1d_source or not (args.dav1d_source / 'COPYING').is_file():
+        raise SystemExit('The linked dav1d requires its matching source and notices')
+    dav1d_port = args.vcpkg / 'ports/dav1d'
+    dav1d_spdx = json.loads((args.prefix / 'share/dav1d/vcpkg.spdx.json').read_text(encoding='utf-8'))
+    for item in dav1d_spdx['files']:
+        if item['SPDXID'].startswith('SPDXRef-port-file-'):
+            expected = next(c['checksumValue'] for c in item['checksums'] if c['algorithm'] == 'SHA256')
+            if hashlib.sha256((dav1d_port / item['fileName']).read_bytes()).hexdigest() != expected.lower():
+                raise SystemExit('dav1d port provenance mismatch')
+    extra_sources = [(args.dav1d_source, 'dav1d-source'), (dav1d_port, 'dav1d-vcpkg-port'),
+                     (args.prefix / 'share/dav1d', 'dav1d-notices')]
 args.output.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(args.output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=7) as archive:
-    for base, prefix in ((args.source, 'ffmpeg-patched'), (port, 'vcpkg-port')):
+    for base, prefix in [(args.source, 'ffmpeg-patched'), (port, 'vcpkg-port'), *extra_sources]:
         for path in sorted(base.rglob('*')):
             if path.is_file():
                 relative = path.relative_to(base)
@@ -79,7 +93,10 @@ with zipfile.ZipFile(args.output, 'x', compression=zipfile.ZIP_DEFLATED, compres
         'not copied from a potentially newer build cache.\n'
         'Build using Visual Studio x64 tools and vcpkg FFmpeg 9.0.1#1, selecting features\n'
         'to match the recorded configuration (shared LGPL libraries, swscale/swresample,\n'
-        'no external codec libraries, no CLI programs). See portfile.cmake and build.sh.in.\n'
+        'external libraries exactly as listed in binary-configuration.txt, no CLI programs).\n'
+        'When dav1d is enabled, dav1d-source and dav1d-vcpkg-port contain its source/recipe;\n'
+        'build and install it first, then configure FFmpeg with --enable-libdav1d.\n'
+        'See portfile.cmake and build.sh.in.\n'
         'The recorded configuration includes original local build paths; adapt paths locally.\n'
         'Veyra links dynamically; compatible rebuilt libraries may replace the shipped DLLs.\n'
         'Upstream: https://github.com/FFmpeg/FFmpeg/tree/n9.0.1\n'
