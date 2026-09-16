@@ -98,6 +98,7 @@ if(VEYRA_ENABLE_EXPERIMENTAL_DLSSNR)
 add_library(veyra_ngx STATIC
   src/ngx/NgxCoreHost.cpp
   src/ngx/DlssNrRuntimeAdapter.cpp
+  src/ngx/NgxAmpereCompat.cpp
   src/ngx/DlssSrBackend.cpp
   src/ngx/VideoSrBackend.cpp
   src/ngx/DlssFgBackend.cpp

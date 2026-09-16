@@ -8,6 +8,8 @@
 // ring (NR evaluates on a fresh list - snippet constraint).
 #include "veyra/pipeline/EnhanceGraph.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -27,6 +29,7 @@
 #include "veyra/ngx/VideoSrBackend.h"
 #include "veyra/ngx/NgxCoreHost.h"
 #include "veyra/ngx/NgxParameters.h"
+#include "veyra/ngx/NgxAmpereCompat.h"
 #include "veyra/ngx/NvOfSession.h"
 #include "veyra/guidance/AmdOpticalFlow.h"
 #include "veyra/guidance/GpuDisOpticalFlow.h"
@@ -139,13 +142,16 @@ bool EnhanceGraph::createResources()
     if(!fgDisableInit_)return false;
     void* initial=nullptr;if(FAILED(fgDisableInit_->Map(0,nullptr,&initial)))return false;
     *static_cast<uint32_t*>(initial)=1;fgDisableInit_->Unmap(0,nullptr);
-    for(unsigned i=0;i<6;++i){
+    for(unsigned i=0;i<2;++i){
         D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=4;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;bd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
         HRESULT hr=context_.device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&fgDisable_[i]));
         if(FAILED(hr)){veyra::log::error("fg-status",std::format("allocate UAV hr=0x{:X}",unsigned(hr)));return false;}
-        hp.Type=D3D12_HEAP_TYPE_READBACK;bd.Flags=D3D12_RESOURCE_FLAG_NONE;
-        hr=context_.device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&fgDisableReadback_[i]));
+    }
+    for(unsigned i=0;i<std::size(fgDisableReadback_);++i){
+        D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=4;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;bd.Flags=D3D12_RESOURCE_FLAG_NONE;
+        D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;
+        HRESULT hr=context_.device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&fgDisableReadback_[i]));
         if(FAILED(hr)){veyra::log::error("fg-status",std::format("allocate readback hr=0x{:X}",unsigned(hr)));return false;}
     }
     // NV12 CPU upload keeps UPLOAD-heap BUFFERS (upload-heap textures are
@@ -193,7 +199,13 @@ bool EnhanceGraph::createResources()
     depthTex_ = makeTexture(context_.device(), workW_, workH_, DXGI_FORMAT_R32_FLOAT, false);
     // Valid placeholder descriptors keep disabled FG inexpensive. Enabling it
     // is a graph rebuild, so no in-flight descriptor is resized in place.
-    for(auto& frame:genFrame_){frame=makeTexture(context_.device(),fgEnabled_?workW_:1,fgEnabled_?workH_:1,outputFormat(),true);if(!frame)return false;}
+    // Slots follow the stride-2 per-parity pattern: multiplier M fills
+    // 2*(M-1) textures; the rest stay 1x1 placeholders.
+    const unsigned genSlotsNeeded=fgEnabled_?2u*(desc_.fgMultiplier-1):0u;
+    for(unsigned i=0;i<std::size(genFrame_);++i){
+        const bool used=fgEnabled_&&i<genSlotsNeeded;
+        genFrame_[i]=makeTexture(context_.device(),used?workW_:1,used?workH_:1,outputFormat(),true);if(!genFrame_[i])return false;
+    }
     nrZeroMotion_ = makeTexture(context_.device(), workW_, workH_, DXGI_FORMAT_R16G16_FLOAT, false);
     nrZeroDepth_ = makeTexture(context_.device(), workW_, workH_, DXGI_FORMAT_R32_FLOAT, false);
     rawW_ = (nvofW_ + nvofGrid_ - 1) / nvofGrid_;
@@ -383,16 +395,42 @@ bool EnhanceGraph::initNgxFeatures()
 
     fgCapsAvailable_ = false;
     fgMultiFrameMax_ = 0;
+    fgAmpere_ = false;
     if (fgEnabled_ && desc_.frameGenerationBackend==engine::FrameGenerationBackend::Dlss) {
     failedBackend_=engine::FailedBackend::Fg;
     fgBackend_ = std::make_unique<ngx::DlssFgBackend>();
     ngx::DlssFgBackend::Capability fgCaps{};
-    const bool fgAvailable = fgBackend_->queryCapability(*coreHost_, fgCaps, st);
+    bool fgAvailable = fgBackend_->queryCapability(*coreHost_, fgCaps, st);
+    // Fork extension (dlssg_for_sm86 route): on RTX 30 the driver NGX core
+    // reports FG unavailable. With the explicit experimental flag, re-run the
+    // capability query under the scoped Ampere architecture rewrite, exactly
+    // like the NR adapter route: install on the loaded driver ngx module,
+    // query, then restore on every exit path. Fail-closed when unavailable.
+    if (!fgAvailable && desc_.fgAmpereCompat && context_.adapter().isNvidia) {
+        veyra::log::warn("graph", "fg-ampere: FG unavailable; retrying capability query under scoped Ampere rewrite (experimental)");
+        HMODULE coreModule = GetModuleHandleW(L"nvngx.dll");
+        Status ampereStatus = Status::Ok;
+        if (coreModule == nullptr) {
+            veyra::log::error("graph", "fg-ampere: driver ngx module not loaded; cannot scope rewrite");
+        } else if (!ngx::installNgxAmpereCompat(coreModule, context_.device(), "fg-ampere", ampereStatus)) {
+            veyra::log::error("graph", "fg-ampere: scoped rewrite install failed; failing closed");
+        } else {
+            fgAvailable = fgBackend_->queryCapability(*coreHost_, fgCaps, st);
+            if (fgAvailable) {
+                // Kept installed through create/evaluate; restored in shutdown.
+                fgAmpere_ = true;
+                veyra::log::warn("graph", "fg-ampere: capability rewritten for Ampere; experimental, unverified on real RTX 30 hardware");
+            } else {
+                veyra::log::error("graph", "fg-ampere: capability still unavailable under rewrite; restoring hook and failing closed");
+                ngx::restoreNgxAmpereCompat("fg-ampere");
+            }
+        }
+    }
     if (!fgAvailable) {
         veyra::log::error("graph", "FG unavailable; fail closed");
         return false;
     }
-    if(desc_.enableFg&&(desc_.fgMultiplier<2||desc_.fgMultiplier>4||fgCaps.multiFrameCountMax<desc_.fgMultiplier-1)){veyra::log::error("graph","requested MFG multiplier unsupported");return false;}
+    if(desc_.enableFg&&(desc_.fgMultiplier<2||desc_.fgMultiplier>6||fgCaps.multiFrameCountMax<desc_.fgMultiplier-1)){veyra::log::error("graph",std::format("requested MFG multiplier unsupported max={} requested={}",fgCaps.multiFrameCountMax,desc_.fgMultiplier-1));return false;}
     fgCapsAvailable_ = fgCaps.available;
     fgMultiFrameMax_ = fgCaps.multiFrameCountMax;
     veyra::log::info("graph", std::format("FG capability available={} multiFrameMax={}",
@@ -741,7 +779,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     if(!realLeases_[parity].expired()||!generatedLeases_[parity].expired()){
         veyra::log::error("frame-pool",std::format("slot={} still leased; refusing overwrite, batch={}",parity,realFrameIndex_+1));return false;
     }
-    for(unsigned i=parity;i<6;i+=2)if(!generatedLeases_[i].expired()){veyra::log::error("frame-pool","generated subframe still leased; refusing overwrite");return false;}
+    for(unsigned i=parity;i<std::size(generatedLeases_);i+=2)if(!generatedLeases_[i].expired()){veyra::log::error("frame-pool","generated subframe still leased; refusing overwrite");return false;}
     if (graphOff) {
         prevPtsMs_ = ptsMs;
         prevValid_ = true;
@@ -1335,8 +1373,8 @@ bool EnhanceGraph::applySettings(const engine::EnhancementSettings& s){
     // DLSS allocates multiplier-specific feature/output resources.
     // XeSS has a fixed 2X proxy swapchain contract. Settings callers must
     // rebuild instead of accepting a change that cannot take effect in place.
-    if(s.nrRuntime!=desc_.nrRuntime||std::max(2u,s.multiplier)!=desc_.fgMultiplier||s.frameGenerationBackend!=desc_.frameGenerationBackend||s.videoSrQuality!=desc_.videoSrQuality||!s.validate().empty()||(s.multiplier>1&&s.frameGenerationBackend!=engine::FrameGenerationBackend::XeSS&&(!fgCapsAvailable_||s.multiplier-1>uint32_t(fgMultiFrameMax_))))return false;
-    desc_.contentRate=s.content;desc_.model=s.model;desc_.residual=s.residual;desc_.protection=s.protection;desc_.settingsRevision=s.revision;
+    if(s.nrRuntime!=desc_.nrRuntime||s.fgAmpereCompat!=desc_.fgAmpereCompat||std::max(2u,s.multiplier)!=desc_.fgMultiplier||s.frameGenerationBackend!=desc_.frameGenerationBackend||s.videoSrQuality!=desc_.videoSrQuality||!s.validate().empty()||(s.multiplier>1&&s.frameGenerationBackend!=engine::FrameGenerationBackend::XeSS&&(!fgCapsAvailable_||s.multiplier-1>uint32_t(fgMultiFrameMax_))))return false;
+    desc_.contentRate=s.content;desc_.model=s.model;desc_.residual=s.residual;desc_.protection=s.protection;desc_.settingsRevision=s.revision;desc_.fgAmpereCompat=s.fgAmpereCompat;
     desc_.fgMultiplier=std::max(2u,s.multiplier);desc_.enableNvofStandalone=s.nr&&!desc_.stillImage;nvofStandalone_=desc_.enableNvofStandalone;
     setNrEnabled(s.nr);setFgEnabled(s.multiplier>1&&s.frameGenerationBackend!=engine::FrameGenerationBackend::XeSS);
     veyra::log::info("settings",std::format("requested revision={} intensity={} tone={} structure={} skin={} style={} autoMask={} UI={} residual={}/{}/{}/{}/{} multiplier={}",s.revision,s.model.intensity,s.model.tone,s.model.structure,s.model.skin,s.model.style,s.model.autoMask,s.model.uiCorrection,s.residual.total,s.residual.darken,s.residual.brighten,s.residual.color,s.residual.luminance,s.multiplier));
@@ -1381,7 +1419,7 @@ ID3D12Resource* EnhanceGraph::videoFrameResource(uint32_t slot) const
 
 ID3D12Resource* EnhanceGraph::generatedFrameResource(uint32_t slot) const
 {
-    return slot < 6 ? genFrame_[slot].Get() : nullptr;
+    return slot < std::size(genFrame_) ? genFrame_[slot].Get() : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,7 +1429,9 @@ ID3D12Resource* EnhanceGraph::generatedFrameResource(uint32_t slot) const
 // ---------------------------------------------------------------------------
 void EnhanceGraph::shutdown()
 {
-    if (!initialized_ && !nrAdapter_ && !nvof_ && !srcRgba_) return;
+    // The guard must not skip the fg-ampere restore when initialize() failed
+    // before any resource existed (otherwise the scoped hook would leak).
+    if (!initialized_ && !nrAdapter_ && !nvof_ && !srcRgba_ && !ngx::ngxAmpereCompatInstalled()) return;
     (void)ring_.drainQueue();(void)ring_.discardRecording();
     for(auto& input:hardwareInputFrames_)input.reset();
     Status st = Status::Ok;
@@ -1435,6 +1475,7 @@ void EnhanceGraph::shutdown()
         nrAdapter_->unload();
     }
     if (coreHost_) coreHost_->shutdown();
+    if (ngx::ngxAmpereCompatInstalled()) ngx::restoreNgxAmpereCompat("fg-ampere");
 
     // Staged explicit release (scope-end destructors then have nothing left).
     decPass_ = ComputePass{};
@@ -1442,7 +1483,11 @@ void EnhanceGraph::shutdown()
     for(unsigned i=0;i<2;++i){if(upRgb_[i]&&mappedRgb_[i])upRgb_[i]->Unmap(0,nullptr);mappedRgb_[i]=nullptr;upRgb_[i].Reset();}
     downsamplePass_={};residualPass_={};flowAdaptPass_={};
     nrInput_.Reset();residualRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    for(unsigned i=0;i<6;++i){fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
+    for(unsigned i=0;i<2;++i)fgDisable_[i].Reset();
+    for(unsigned i=0;i<std::size(fgDisableReadback_);++i)fgDisableReadback_[i].Reset();
+    for(unsigned i=0;i<std::size(generatedLeases_);++i)generatedLeases_[i].reset();
+    for(unsigned i=0;i<std::size(genFrame_);++i)genFrame_[i].Reset();
+    for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
     blitPass_ = ComputePass{};hdrVideoSrPass_={};
     yuvPass_ = ComputePass{};

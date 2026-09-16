@@ -80,6 +80,7 @@ struct EnhanceGraphDesc {
     uint32_t nrWidth=0,nrHeight=0; // zero preserves legacy native working extent
     uint32_t flowWidth=0,flowHeight=0; // zero preserves legacy source-space NVOF extent
     uint32_t fgMultiplier=2;
+    bool fgAmpereCompat=false; // fork extension: scoped Ampere rewrite for the driver NGX core (RTX 30, experimental)
     engine::FrameGenerationBackend frameGenerationBackend=engine::FrameGenerationBackend::Dlss;
     uint64_t settingsRevision=1;
     engine::FlowQuality flowQuality=engine::FlowQuality::Balanced;
@@ -192,6 +193,7 @@ public:
     bool srEnabled() const { return srEnabled_; }
     bool nrEnabled() const { return nrEnabled_; }
     bool fgEnabled() const { return fgEnabled_; }
+    bool fgAmpere() const { return fgAmpere_; }
     bool hdrOutput() const { return desc_.hdrOutput; }
     bool hdr10Output() const { return desc_.hdrOutput && desc_.enableFg; }
     DXGI_FORMAT outputFormat() const { return hdr10Output()?DXGI_FORMAT_R10G10B10A2_UNORM:desc_.hdrOutput?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM; }
@@ -274,12 +276,14 @@ private:
     ComPtr<ID3D12Resource> proxyTex_;
     ComPtr<ID3D12Resource> neuralTex_;
     ComPtr<ID3D12Resource> finalRgba_;
+    // Generated-frame pool: the per-parity stride-2 pattern needs 2*M slots
+    // for multiplier M (6X = 10); 2X-4X used the historical 6.
     ComPtr<ID3D12Resource> videoFrame_[2];
     ComPtr<ID3D12Resource> confTex_;
     ComPtr<ID3D12Resource> flowTex_;
     ComPtr<ID3D12Resource> depthTex_;
-    ComPtr<ID3D12Resource> genFrame_[6];
-    ComPtr<ID3D12Resource> fgDisable_[6],fgDisableReadback_[6],fgDisableInit_;
+    ComPtr<ID3D12Resource> genFrame_[10];
+    ComPtr<ID3D12Resource> fgDisable_[2],fgDisableReadback_[10],fgDisableInit_;
     ComPtr<ID3D12Resource> nrZeroMotion_;
     ComPtr<ID3D12Resource> nrZeroDepth_;
     ComPtr<ID3D12Resource> nvofRawTex_;
@@ -318,11 +322,12 @@ private:
     uint32_t nrSeh_ = 0;
     bool fgCapsAvailable_ = false;
     int fgMultiFrameMax_ = 0;
+    bool fgAmpere_ = false;
 
     // Per-run state.
     uint64_t realFrameIndex_ = 0;
     uint64_t epoch_ = 0;
-    std::weak_ptr<FrameLease> realLeases_[2],generatedLeases_[6];
+    std::weak_ptr<FrameLease> realLeases_[2],generatedLeases_[10];
     uint32_t nextListSlot_ = 0;
     uint64_t uploadFences_[2] = {};
     // FFmpeg may recycle a hardware surface as soon as its AVFrame is freed.

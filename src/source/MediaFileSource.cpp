@@ -196,6 +196,8 @@ bool MediaFileSource::open(const SourceOpenDesc& desc)
     sequence_ = 0;
     framesRead_ = 0;
     seekCount_ = 0;
+    recoverableSkips_ = 0;
+    consecutiveRecoverable_ = 0;
     draining_ = false;
     eofSignalled_ = false;
     pendingSeekFlag_ = false;
@@ -220,6 +222,23 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
     out = pipeline::FramePacket{};
     if (!info_.opened || !errorMessage_.empty()) { return SourceReadStatus::Error; }
 
+    // Fork fix (intermittent playback failures): a single corrupt packet, a
+    // transient decoder error or one damaged frame skips forward like
+    // mainstream players instead of aborting the session. Bounded by
+    // consecutive failures; demux hard errors and errors after input end
+    // stay fatal (fail-closed is unchanged beyond the tolerance window).
+    constexpr unsigned kMaxConsecutiveRecoverable = 32;
+    auto recoverable = [&](const wchar_t* fatal, const char* note) {
+        ++recoverableSkips_;
+        if (++consecutiveRecoverable_ > kMaxConsecutiveRecoverable) {
+            veyra::log::error("source-file", std::format("{} ({} consecutive recoverable failures)", note, consecutiveRecoverable_));
+            errorMessage_ = fatal;
+            return false;
+        }
+        veyra::log::warn("source-file", std::format("{}; skipping forward ({}/{})", note, consecutiveRecoverable_, kMaxConsecutiveRecoverable));
+        return true;
+    };
+
     const AVFrame* frame = nullptr;
     for (;;) {
         frame = decoder_.receiveFrame();
@@ -228,15 +247,17 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
             return SourceReadStatus::Eos;
         }
         if (decoder_.receiveStatus() == media::DecodeReceiveStatus::Error) {
+            // Upstream first-frame D3D12VA fallback, then the fork's bounded
+            // mid-stream skip-forward; only the last resort is fatal.
             if (fallbackToSoftware("decoder-error")) {
                 continue;
             }
-            errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
-            return SourceReadStatus::Error;
-        }
-        if (draining_) {
-            errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
-            return SourceReadStatus::Error;
+            if (draining_ || !recoverable(L"视频解码失败，已停止处理，请检查源文件是否损坏", "decoder receive error")) {
+                if (draining_) errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
+                return SourceReadStatus::Error;
+            }
+            decoder_.flushBuffers();
+            continue;
         }
         bool eof = false;
         if (!demuxer_.readVideoPacket(eof)) {
@@ -249,18 +270,23 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
             continue;
         }
         if (demuxer_.currentPacket()->flags & AV_PKT_FLAG_CORRUPT) {
-            veyra::log::error("source-file", "corrupt video packet; refusing to skip source data");
-            errorMessage_ = L"源视频包含损坏数据，已停止处理";
-            return SourceReadStatus::Error;
+            if (!recoverable(L"源视频包含损坏数据，已停止处理", "corrupt video packet")) {
+                return SourceReadStatus::Error;
+            }
+            continue;
         }
         if (!decoder_.sendPacket(demuxer_.currentPacket())) {
             if (fallbackToSoftware("send-packet-error")) {
                 continue;
             }
-            errorMessage_ = L"视频解码失败，已停止处理，请检查源文件是否损坏";
-            return SourceReadStatus::Error;
+            if (!recoverable(L"视频解码失败，已停止处理，请检查源文件是否损坏", "packet rejected by decoder")) {
+                return SourceReadStatus::Error;
+            }
+            continue;
         }
     }
+
+    consecutiveRecoverable_ = 0;
 
     if (decoder_.hardwareActive() && !decoder_.hardwareFrameImportable()) {
         if (fallbackToSoftware("unsupported-d3d12-surface")) {
@@ -271,9 +297,10 @@ SourceReadStatus MediaFileSource::read(pipeline::FramePacket& out, const AVFrame
     }
 
     if ((frame->flags & AV_FRAME_FLAG_CORRUPT) || frame->decode_error_flags) {
-        veyra::log::error("source-file", std::format("corrupt decoded frame flags={} decodeErrors={}", frame->flags, frame->decode_error_flags));
-        errorMessage_ = L"源视频包含损坏画面，已停止处理";
-        return SourceReadStatus::Error;
+        if (!recoverable(L"源视频包含损坏画面，已停止处理", "corrupt decoded frame")) {
+            return SourceReadStatus::Error;
+        }
+        return read(out, decodedFrame); // bounded by the consecutive counter
     }
     if (frame->width <= 0 || frame->height <= 0 || uint32_t(frame->width) != info_.width || uint32_t(frame->height) != info_.height) {
         veyra::log::error("source-file", std::format("frame extent changed: opened={}x{} decoded={}x{}; file processing stopped before upload", info_.width, info_.height, frame->width, frame->height));

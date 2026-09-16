@@ -35,7 +35,7 @@ bool legacyBackends(const std::filesystem::path& path) {
    if(version>=7&&(value.audioSync!=AudioSyncMode::Manual||value.audioOffsetMs!=137))return false;
    if(!store.put(L"legacy",value,true))return false;
    std::ifstream file(path);std::string magic;int savedVersion=0;file>>magic>>savedVersion;
-   if(magic!="VEYRA_PRESETS"||savedVersion!=12)return false;
+   if(magic!="VEYRA_PRESETS"||savedVersion!=13)return false;
    PresetStore reloaded(path);
    if(!reloaded.load()||reloaded.defaultSettings()!=value)return false;
   }else{

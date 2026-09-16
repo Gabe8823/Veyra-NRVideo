@@ -33,6 +33,7 @@ public:
     uint64_t framesRead() const { return framesRead_; }
     uint64_t seekCount() const { return seekCount_; }
     uint64_t epoch() const { return epoch_; }
+    uint64_t recoverableSkips() const { return recoverableSkips_; }
     const std::wstring& errorMessage() const { return errorMessage_; }
 
 private:
@@ -46,6 +47,8 @@ private:
     uint64_t epoch_ = 1;
     uint64_t framesRead_ = 0;
     uint64_t seekCount_ = 0;
+    uint64_t recoverableSkips_ = 0;
+    unsigned consecutiveRecoverable_ = 0;
     bool pendingSeekFlag_ = false;
     bool draining_ = false;
     bool eofSignalled_ = false;

@@ -75,6 +75,7 @@ struct EnhancementSettings {
     pipeline::SrTarget srTarget=pipeline::SrTarget::Uhd4K;
     uint32_t videoSrQuality=0; // 0 DLSS SR; 1–4 RTX Video SR
     uint32_t multiplier=1;
+    bool fgAmpereCompat=false; // experimental: NVAPI architecture rewrite scoped to the driver NGX core so DLSS-G capability is re-queried as Ada on RTX 30 (fork extension, fail-closed)
     FrameGenerationBackend frameGenerationBackend=FrameGenerationBackend::Dlss;
     pipeline::NrSizePolicy nrPolicy=pipeline::NrSizePolicy::Realtime;
     FlowQuality flow=FlowQuality::Balanced;
@@ -114,7 +115,7 @@ struct EnhancementSettings {
         if(videoSrQuality>4)return "invalid video SR quality";
         if(!pipeline::validSrTarget(srTarget))return "invalid SR target";
         if(opticalFlowBackend!=OpticalFlowBackend::Nvidia&&opticalFlowBackend!=OpticalFlowBackend::AmdFidelityFx&&opticalFlowBackend!=OpticalFlowBackend::GpuDis)return "invalid optical flow backend";
-        if(multiplier<1||multiplier>4)return "unsupported multiplier";
+        if(multiplier<1||multiplier>6)return "unsupported multiplier"; // 2X–6X; runtime MultiFrameCountMax gates what the graph actually accepts
         if(!pipeline::validNrSizePolicy(nrPolicy))return "invalid NR size policy";
         if(flow<FlowQuality::Performance||flow>FlowQuality::Quality||content<ContentRate::Transport||content>ContentRate::Capture60To30)return "invalid flow/content mode";
         return {};

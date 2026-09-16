@@ -63,12 +63,12 @@ void populate(engine::EnhancementSettings s){
     check(200,enhancementEnabled&&s.nr?BST_CHECKED:BST_UNCHECKED);
     check(201,enhancementEnabled&&s.sr?BST_CHECKED:BST_UNCHECKED);
     for(int j=0;j<3;++j){auto h=item(730+j);if(j==int(s.srTarget))SetPropW(h,L"veyra.selected",HANDLE(1));else RemovePropW(h,L"veyra.selected");InvalidateRect(h,nullptr,FALSE);}
-    const int multiplierCount=s.frameGenerationBackend==engine::FrameGenerationBackend::XeSS?2:4;
-    if(send(202,CB_GETCOUNT)!=multiplierCount){send(202,CB_RESETCONTENT);const wchar_t* choices[]={L"关闭补帧",L"2X · 一张中间帧",L"3X · 两张中间帧",L"4X · 三张中间帧"};for(int i=0;i<multiplierCount;++i)send(202,CB_ADDSTRING,0,LPARAM(choices[i]));}
+    const int multiplierCount=s.frameGenerationBackend==engine::FrameGenerationBackend::XeSS?2:6;
+    if(send(202,CB_GETCOUNT)!=multiplierCount){send(202,CB_RESETCONTENT);const wchar_t* choices[]={L"关闭补帧",L"2X · 一张中间帧",L"3X · 两张中间帧",L"4X · 三张中间帧",L"5X · 四张中间帧 · 实验",L"6X · 五张中间帧 · 实验"};for(int i=0;i<multiplierCount;++i)send(202,CB_ADDSTRING,0,LPARAM(choices[i]));}
     send(207,CB_SETCURSEL,s.videoSrQuality,0);send(202,CB_SETCURSEL,s.multiplier-1,0);
     send(208,CB_SETCURSEL,int(s.frameGenerationBackend),0);send(203,CB_SETCURSEL,int(s.nrPolicy),0);
     send(218,CB_SETCURSEL,int(s.nrRuntime));
-    check(219,s.captureCompatible?BST_CHECKED:BST_UNCHECKED);check(220,s.lowLatency?BST_CHECKED:BST_UNCHECKED);
+    check(219,s.captureCompatible?BST_CHECKED:BST_UNCHECKED);check(220,s.lowLatency?BST_CHECKED:BST_UNCHECKED);check(222,s.fgAmpereCompat?BST_CHECKED:BST_UNCHECKED);
     send(204,CB_SETCURSEL,int(s.flow),0);send(205,CB_SETCURSEL,int(s.content),0);
     send(209,CB_SETCURSEL,int(s.opticalFlowBackend),0);
     check(215,s.amdFlowHalfResolution?BST_CHECKED:BST_UNCHECKED);
@@ -87,7 +87,7 @@ bool read(engine::EnhancementSettings& s,bool allPages=false){s=enhancementEnabl
         s.multiplier=uint32_t(multiplier+1);s.frameGenerationBackend=static_cast<engine::FrameGenerationBackend>(generation);s.opticalFlowBackend=static_cast<engine::OpticalFlowBackend>(flowBackend);s.amdFlowHalfResolution=checked(215)==BST_CHECKED;s.flow=static_cast<engine::FlowQuality>(flowQuality);s.content=static_cast<engine::ContentRate>(content);
         s.audioSync=static_cast<engine::AudioSyncMode>(send(216,CB_GETCURSEL));
         s.nrRuntime=static_cast<engine::NrRuntime>(send(218,CB_GETCURSEL));
-        s.captureCompatible=checked(219)==BST_CHECKED;s.lowLatency=checked(220)==BST_CHECKED;
+        s.captureCompatible=checked(219)==BST_CHECKED;s.lowLatency=checked(220)==BST_CHECKED;s.fgAmpereCompat=checked(222)==BST_CHECKED;
         wchar_t offset[32]{};GetWindowTextW(item(217),offset,32);wchar_t* offsetEnd=nullptr;const auto parsed=wcstol(offset,&offsetEnd,10);
         if(offsetEnd==offset||*offsetEnd||parsed<-250||parsed>250){message(L"声音偏移须为 -250 至 250 ms");return false;}s.audioOffsetMs=int(parsed);
         for(int j=0;j<3;++j)if(GetPropW(item(730+j),L"veyra.selected")){s.srTarget=static_cast<pipeline::SrTarget>(j);break;}
@@ -111,6 +111,7 @@ bool liveField(int id){
         case 107:s.residual.total=v;break;case 108:s.residual.darken=v;break;case 109:s.residual.brighten=v;break;case 110:s.residual.color=v;break;case 111:s.residual.luminance=v;break;default:return false;}
     }else switch(id){
         case 219:s.captureCompatible=checked(id)==BST_CHECKED;break;
+        case 222:s.fgAmpereCompat=checked(id)==BST_CHECKED;break;
         case 218:s.nrRuntime=static_cast<engine::NrRuntime>(send(id,CB_GETCURSEL));break;
         case 203:s.nrPolicy=static_cast<pipeline::NrSizePolicy>(send(id,CB_GETCURSEL));break;
         case 204:s.flow=static_cast<engine::FlowQuality>(send(id,CB_GETCURSEL));break;
@@ -162,6 +163,7 @@ void combo(int id,int group,int y,std::initializer_list<const wchar_t*> names){a
 LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM wp,LPARAM lp){
     if(msg==WM_COMMAND&&LOWORD(wp)==221&&HIWORD(wp)==BN_CLICKED){smoothMotionHelpExpanded=!smoothMotionHelpExpanded;putText(221,smoothMotionHelpExpanded?L"Smooth Motion · 收起说明 ▴":L"Smooth Motion · 开启方法 ▾");arrange();return 0;}
     if(msg==WM_COMMAND&&!populating&&LOWORD(wp)==220&&HIWORD(wp)==BN_CLICKED){liveField(220);return 0;}
+    if(msg==WM_COMMAND&&!populating&&LOWORD(wp)==222&&HIWORD(wp)==BN_CLICKED){liveField(222);return 0;}
     if(msg==WM_COMMAND&&!populating&&LOWORD(wp)==219&&HIWORD(wp)==BN_CLICKED){liveField(219);return 0;}
     if(msg==WM_COMMAND&&!populating&&LOWORD(wp)==218&&HIWORD(wp)==CBN_SELCHANGE){liveField(218);return 0;}
     if(msg==WM_COMMAND&&!populating&&((LOWORD(wp)==216&&HIWORD(wp)==CBN_SELCHANGE)||(LOWORD(wp)==217&&HIWORD(wp)==EN_CHANGE))){liveField(LOWORD(wp));return 0;}
@@ -188,7 +190,9 @@ case WM_CREATE:{window=h;font=makeFont(h);items.clear();displayedBackendWarning.
     add(L"STATIC",L"补帧方式",1111,0,1,12,50,-1,24);
     combo(208,1,78,{L"DLSS 帧生成",L"Intel XeSS · 实验显示补帧 2X"});
     add(L"STATIC",L"补帧倍率",1112,0,1,12,122,-1,24);
-    combo(202,1,150,{L"关闭补帧",L"2X · 一张中间帧",L"3X · 两张中间帧",L"4X · 三张中间帧"});
+    combo(202,1,150,{L"关闭补帧",L"2X · 一张中间帧",L"3X · 两张中间帧",L"4X · 三张中间帧",L"5X · 四张中间帧 · 实验",L"6X · 五张中间帧 · 实验"});
+    add(L"BUTTON",L"RTX 30 补帧解锁 · 实验",222,BS_AUTOCHECKBOX|WS_TABSTOP,1,12,358,-1,36);
+    SetPropW(item(222),L"veyra.tip",HANDLE(L"fork 实验功能：RTX 30 上重新查询驱动帧生成能力（社区 dlssg_for_sm86 思路，仅软件内作用域改写，不改驱动文件）。仅在默认路径报告不支持时尝试；失败自动回退并停用补帧，不保证成功。倍率仍受运行时实际上限限制。未在实卡验收。"));
     add(L"STATIC",L"运动估算",1113,0,1,12,194,-1,24);
     combo(209,1,222,{L"NVIDIA NVOF 光流",L"AMD FidelityFX 光流 · 实验",L"GPU DIS 光流 · FAST 实验"});
     add(L"BUTTON",L"AMD 性能档 · 光流宽高各减半",215,BS_AUTOCHECKBOX|WS_TABSTOP,1,12,266,-1,36);
@@ -223,7 +227,7 @@ case WM_CREATE:{window=h;font=makeFont(h);items.clear();displayedBackendWarning.
     for(auto& entry:items)if(entry.page==0&&entry.y>=56)entry.y+=80;
     add(L"STATIC",L"NR 运行版本",1117,0,0,12,56,-1,24);
     combo(218,0,84,{L"NVIDIA 原版 · RTX 50",L"社区兼容 · RTX 40/50 实验",L"RTX 30 兼容 · 实验"});
-    SetPropW(item(218),L"veyra.tip",HANDLE(L"社区版为修改运行时。RTX 30 档需单独组件，性能与兼容性待持卡验证；不解锁 DLSS 补帧。切换会重建管线，失败恢复原设置。"));
+    SetPropW(item(218),L"veyra.tip",HANDLE(L"社区版为修改运行时。RTX 30 档需单独组件，性能与兼容性待持卡验证；NR 档位不影响补帧，补帧解锁用下方独立开关。切换会重建管线，失败恢复原设置。"));
     // Final layout in reading order; existing control IDs and bindings stay intact.
     for(auto& entry:items){
         const int id=GetDlgCtrlID(entry.h);
@@ -237,18 +241,19 @@ case WM_CREATE:{window=h;font=makeFont(h);items.clear();displayedBackendWarning.
         case 215:entry.y=122;break;case 204:entry.y=166;break;
         case 1111:entry.y=214;break;case 208:entry.y=242;break;
         case 1112:entry.y=286;break;case 202:entry.y=314;break;
-        case 1114:entry.y=402;break;case 205:entry.y=430;break;
-        case 1110:entry.y=474;break;
+        case 222:entry.y=362;break;
+        case 1114:entry.y=546;break;case 205:entry.y=574;break;
+        case 1110:entry.y=620;break;
         case 1115:entry.page=4;entry.y=12;break;
         case 216:entry.page=4;entry.y=50;break;
         case 1116:case 217:entry.page=4;entry.y=100;break;
         }
     }
     setText(item(1103),L"光流与补帧");
-    button(L"Smooth Motion · 开启方法 ▾",221,1,12,358);
+    button(L"Smooth Motion · 开启方法 ▾",221,1,12,410);
     ghost(item(221));
     SetPropW(item(221),L"veyra.tip",HANDLE(L"查看 NVIDIA App 的 AI 插帧开启方法。这里只提供说明，不修改驱动，也不限制叠加补帧。"));
-    add(L"STATIC",smoothMotionHelp,1120,SS_NOPREFIX,1,12,400,-1,1);
+    add(L"STATIC",smoothMotionHelp,1120,SS_NOPREFIX,1,12,454,-1,1);
     setText(item(1113),L"光流 · 运动估算");
     setText(item(1115),L"采集 / 串流音频同步");
     add(L"STATIC",L"调整实时输入的声音补偿，不改变补帧倍率。正值让声音更晚；自动模式由软件估算。",1118,0,4,12,148,-1,90);
